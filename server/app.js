@@ -78,6 +78,3 @@ app.post('/v1/interact', async (req, res) => {
 app.use('/v1/interact', interactRoutes);
 
 module.exports = app;
-
-
->>>>>>> 802fbf5b8e6d511e5c5a988d384c303a478d3654
