@@ -36,11 +36,11 @@ app.use(
   cors({
     origin: (origin, callback) => {
       try {
-        if (!origin) return callback(null, true);
+        if (!origin) return callback(null, true); // Allow server-to-server / curl
         const hostname = new URL(origin).hostname;
         if (
-          /\.ext-twitch\.tv$/.test(hostname) ||
-          /\.twitch\.tv$/.test(hostname) ||
+          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
+          /\.twitch\.tv$/.test(hostname) || // Twitch main site
           hostname === "localhost" ||
           hostname === "127.0.0.1"
         ) {
@@ -91,15 +91,11 @@ wss.on("connection", (ws, req) => {
   }
 });
 
-function sendToClient(userId, message) {
+function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(message));
+    ws.send(JSON.stringify({ type: "update", state: gelly }));
   }
-}
-
-function broadcastState(userId, gelly) {
-  sendToClient(userId, { type: "update", state: gelly });
 }
 
 async function sendLeaderboard() {
@@ -108,10 +104,31 @@ async function sendLeaderboard() {
     .limit(10)
     .lean();
 
-  const data = { type: "leaderboard", entries: leaderboard };
+  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
+}
+
+// ===== Persistent Hourly Decay =====
+async function applyHourlyDecay(gelly) {
+  if (!gelly.lastUpdated) gelly.lastUpdated = new Date();
+
+  const now = new Date();
+  const hoursPassed = Math.floor((now - gelly.lastUpdated) / (1000 * 60 * 60));
+
+  if (hoursPassed > 0) {
+    const decayPerHour = { energy: 2, mood: 1, cleanliness: 1 };
+
+    gelly.energy = Math.max(0, gelly.energy - decayPerHour.energy * hoursPassed);
+    gelly.mood = Math.max(0, gelly.mood - decayPerHour.mood * hoursPassed);
+    gelly.cleanliness = Math.max(0, gelly.cleanliness - decayPerHour.cleanliness * hoursPassed);
+
+    gelly.lastUpdated = now;
+    await gelly.save();
+  }
+
+  return gelly;
 }
 
 // ===== Interact Endpoint =====
@@ -125,30 +142,28 @@ app.post("/v1/interact", async (req, res) => {
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
+    // Apply persistent decay before processing action
+    gelly = await applyHourlyDecay(gelly);
+
     let pointsAwarded = 0;
-    let feedbackMessage = "";
 
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
       if (["blue", "green", "pink"].includes(color)) gelly.color = color;
       pointsAwarded = 1;
-      feedbackMessage = `🎨 Changed color to ${color}`;
     } else {
       switch (action) {
         case "feed":
           gelly.energy = Math.min(100, gelly.energy + 10);
           pointsAwarded = 5;
-          feedbackMessage = "🍎 You fed your Gelly!";
           break;
         case "play":
           gelly.mood = Math.min(100, gelly.mood + 10);
           pointsAwarded = 5;
-          feedbackMessage = "🎮 You played with your Gelly!";
           break;
         case "clean":
           gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
           pointsAwarded = 5;
-          feedbackMessage = "🧽 You cleaned your Gelly!";
           break;
         default:
           return res.json({ success: false, message: "Unknown action" });
@@ -163,15 +178,7 @@ app.post("/v1/interact", async (req, res) => {
     gelly.lastUpdated = new Date();
     await gelly.save();
 
-    // Send updated state
     broadcastState(user, gelly);
-
-    // Send instant feedback
-    if (feedbackMessage) {
-      sendToClient(user, { type: "feedback", message: feedbackMessage });
-    }
-
-    // Send leaderboard updates
     sendLeaderboard();
 
     res.json({ success: true });
