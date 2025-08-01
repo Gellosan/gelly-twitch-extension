@@ -1,19 +1,15 @@
 const mongoose = require("mongoose");
 
 const GellySchema = new mongoose.Schema({
-  // your schema fields here
-});
-
-// ✅ This prevents OverwriteModelError
-module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
-
-  userId: { type: String, unique: true },
+  userId: { type: String, required: true, unique: true },
   displayName: String,
   energy: { type: Number, default: 100 },
   mood: { type: Number, default: 50 },
   cleanliness: { type: Number, default: 50 },
-  stage: { type: String, default: 'egg' },
-  color: { type: String, default: 'blue' },
+  stage: { type: String, default: "egg" },
+  color: { type: String, default: "blue" },
   lastUpdated: { type: Date, default: Date.now }
+});
 
-module.exports = mongoose.model('Gelly', GellySchema);
+// ✅ Prevent OverwriteModelError in development / hot reload
+module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
