@@ -1,3 +1,5 @@
+const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
+
 window.Twitch.ext.onAuthorized(function (auth) {
   const twitchUserId = auth.userId;
   console.log("[DEBUG] onAuthorized fired. twitchUserId:", twitchUserId);
@@ -5,8 +7,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
   if (!twitchUserId) {
     console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
   }
-
-  const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
 
   function connectWebSocket() {
     if (!twitchUserId) {
