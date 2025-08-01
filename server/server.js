@@ -25,20 +25,20 @@ const GellySchema = new mongoose.Schema({
   points: { type: Number, default: 0 },
   lastUpdated: { type: Date, default: Date.now },
 });
-
 const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
 // ===== Express Setup =====
 const app = express();
 app.use(express.json());
 
-// Dynamically allow Twitch extension origins
+// More flexible Twitch CORS
 app.use(
   cors({
     origin: (origin, callback) => {
       if (
         !origin ||
         /\.ext-twitch\.tv$/.test(origin) ||
+        /\.ext-twitch\.tv$/.test(new URL(origin).hostname) || // match extension domains
         /\.twitch\.tv$/.test(origin) ||
         origin.startsWith("http://localhost") ||
         origin.startsWith("https://localhost")
@@ -55,10 +55,12 @@ app.use(
   })
 );
 
+// Explicit OPTIONS handler for preflight
+app.options("*", cors());
+
 // ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
-
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
