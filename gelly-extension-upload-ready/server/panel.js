@@ -6,7 +6,10 @@ window.Twitch.ext.onAuthorized(function (auth) {
     console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
   }
 
-  const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
+  // ✅ Point this to your BACKEND service on Render (NOT the panel frontend)
+  const SERVER_URL = "https://gelly-server.onrender.com";
+
+  let socket;
 
   function connectWebSocket() {
     if (!twitchUserId) {
@@ -14,23 +17,27 @@ window.Twitch.ext.onAuthorized(function (auth) {
       return;
     }
 
-    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${encodeURIComponent(twitchUserId)}`;
+    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
     console.log("[DEBUG] Connecting WebSocket:", wsUrl);
 
-    const socket = new WebSocket(wsUrl);
+    socket = new WebSocket(wsUrl);
 
     socket.addEventListener("open", () => console.log("[DEBUG] WebSocket connected"));
-    socket.addEventListener("error", (err) => console.error("[DEBUG] WebSocket error", err));
+
+    socket.addEventListener("error", (err) => {
+      console.error("[DEBUG] WebSocket error", err);
+    });
+
+    socket.addEventListener("close", () => {
+      console.warn("[DEBUG] WebSocket closed. Reconnecting in 5s...");
+      setTimeout(connectWebSocket, 5000);
+    });
 
     socket.addEventListener("message", (event) => {
       console.log("[DEBUG] WebSocket message received:", event.data);
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "update") updateUI(msg.state);
-        else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
-      } catch (e) {
-        console.error("[DEBUG] Failed to parse WebSocket message:", e);
-      }
+      const msg = JSON.parse(event.data);
+      if (msg.type === "update") updateUI(msg.state);
+      else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
 
@@ -73,47 +80,43 @@ window.Twitch.ext.onAuthorized(function (auth) {
       return b.cleanliness - a.cleanliness;
     });
 
+    const topTen = sorted.slice(0, 10);
     list.innerHTML = "";
-    sorted.slice(0, 10).forEach((entry, index) => {
-      const name = entry.displayName || entry.userId || "Unknown";
+
+    topTen.forEach((entry, index) => {
       const li = document.createElement("li");
-      li.innerHTML = `<strong>#${index + 1}</strong> ${name} - Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}`;
+      li.innerHTML = `
+        <strong>#${index + 1}</strong> ${entry.user}
+        <span> - Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
+      `;
       list.appendChild(li);
     });
   }
 
   function updateUI(state) {
     console.log("[DEBUG] Updating UI with state:", state);
-
-    const energyEl = document.getElementById("energy");
-    const moodEl = document.getElementById("mood");
-    const cleanEl = document.getElementById("cleanliness");
-    if (energyEl) energyEl.innerText = state.energy;
-    if (moodEl) moodEl.innerText = state.mood;
-    if (cleanEl) cleanEl.innerText = state.cleanliness;
+    document.getElementById("energy").innerText = state.energy;
+    document.getElementById("mood").innerText = state.mood;
+    document.getElementById("cleanliness").innerText = state.cleanliness;
 
     const gellyImage = document.getElementById("gelly-image");
-    if (gellyImage) {
-      const stage = state.stage || "egg";
-      const color = state.color || "blue";
-      if (stage === "egg") {
-        gellyImage.src = "assets/egg.png";
-      } else if (stage === "blob") {
-        gellyImage.src = `assets/blob-${color}.png`;
-      } else if (stage === "gelly") {
-        gellyImage.src = `assets/gelly-${color}.png`;
-      }
+    const stage = state.stage || "egg";
+    const color = state.color || "blue";
+
+    if (stage === "egg") {
+      gellyImage.src = "assets/egg.png";
+    } else if (stage === "blob") {
+      gellyImage.src = `assets/blob-${color}.png`;
+    } else if (stage === "gelly") {
+      gellyImage.src = `assets/gelly-${color}.png`;
     }
   }
 
   function showMessage(msg) {
     console.log("[DEBUG] showMessage:", msg);
     const el = document.getElementById("message");
-    if (!el) return;
     el.innerText = msg;
-    setTimeout(() => {
-      if (el) el.innerText = "";
-    }, 3000);
+    setTimeout(() => (el.innerText = ""), 3000);
   }
 
   function showHelp() {
@@ -128,5 +131,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 
+  // ✅ Start WebSocket connection
   connectWebSocket();
 });
