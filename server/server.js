@@ -31,26 +31,24 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// ===== Flexible Twitch CORS =====
-const allowedRegexes = [/\.ext-twitch\.tv$/, /\.twitch\.tv$/];
-
+// ===== CORS for Twitch Extensions =====
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin) return callback(null, true); // Allow server-to-server calls
-
       try {
+        if (!origin) return callback(null, true); // server-to-server or curl requests
+
         const hostname = new URL(origin).hostname;
+
         if (
-          allowedRegexes.some((rx) => rx.test(hostname)) ||
+          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
+          /\.twitch\.tv$/.test(hostname) || // Twitch main site
           hostname === "localhost" ||
           hostname === "127.0.0.1"
         ) {
           return callback(null, true);
         }
-      } catch (err) {
-        console.warn("CORS parse error:", err);
-      }
+      } catch (_) {}
 
       console.warn(`🚫 CORS blocked origin: ${origin}`);
       callback(new Error("CORS not allowed"));
@@ -61,12 +59,13 @@ app.use(
   })
 );
 
-// Explicit OPTIONS preflight handler
+// Explicit OPTIONS handler for preflight
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
+
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
@@ -169,7 +168,9 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
+// ===== Start Server =====
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
