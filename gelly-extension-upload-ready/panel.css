@@ -100,3 +100,37 @@ body {
     transform: translateX(-50%) translateY(-10px);
   }
 }
+/* Feedback fade */
+#message {
+  transition: opacity 0.5s ease;
+}
+
+/* Gelly Animations */
+.gelly-feed-anim {
+  animation: gellyBounce 0.8s ease;
+}
+.gelly-play-anim {
+  animation: gellyShake 0.8s ease;
+}
+.gelly-clean-anim {
+  animation: gellySpin 0.8s ease;
+}
+
+@keyframes gellyBounce {
+  0%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-10px); }
+  60% { transform: translateY(5px); }
+}
+
+@keyframes gellyShake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  50% { transform: translateX(5px); }
+  75% { transform: translateX(-5px); }
+}
+
+@keyframes gellySpin {
+  0% { transform: rotate(0deg); }
+  50% { transform: rotate(20deg); }
+  100% { transform: rotate(0deg); }
+}
