@@ -1,51 +1,97 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
+const Gelly = require('./models/Gelly');
+
 const app = express();
+app.use(express.json());
 
-// ---------- CORS FIX FOR TWITCH ----------
-const allowedOrigins = [
-  'https://localhost.twitch.tv', // Twitch local testing
-  'https://*.ext-twitch.tv',     // Twitch production extension iframes
-  'https://gelly-panel-kkp9.onrender.com' // Your panel hosting domain
-];
-
+// Allow Twitch extension panel + your Render frontend
 app.use(cors({
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, curl, etc.)
-    if (!origin) return callback(null, true);
-
-    // Check if origin matches an allowed pattern
-    if (allowedOrigins.some(o => {
-      if (o.includes('*')) {
-        // Convert wildcard to regex
-        const regex = new RegExp('^' + o.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$');
-        return regex.test(origin);
-      }
-      return o === origin;
-    })) {
-      return callback(null, true);
-    }
-
-    console.log('CORS blocked origin:', origin);
-    return callback(new Error('Not allowed by CORS'));
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
+  origin: [
+    /\.ext-twitch\.tv$/,                       // Twitch extension iframe
+    'https://gelly-panel-kkp9.onrender.com',   // Your panel hosting on Render
+    'https://localhost:8080',
+    'http://localhost:8080'
+  ],
   credentials: true
 }));
 
-// Handle OPTIONS preflight for all routes
-app.options('*', cors());
+// MongoDB connection
+mongoose.connect(
+  "mongodb+srv://Gellosan:SBI3Q64Te41O7050@gellocluster.gzlntn3.mongodb.net/?retryWrites=true&w=majority&appName=GelloCluster",
+  {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
+  }
+)
+.then(() => console.log("✅ MongoDB Connected"))
+.catch(err => console.error("❌ Mongo Error:", err));
 
-// ---------- JSON Parsing ----------
-app.use(express.json());
+/**
+ * Interact endpoint
+ * Expects: { user, action }
+ */
+app.post('/v1/interact', async (req, res) => {
+  try {
+    const { user, action } = req.body;
+    if (!user) return res.status(400).json({ success: false, message: "Missing user" });
 
-// ---------- Your Existing Routes ----------
-const interactRoute = require('./routes/interact'); // Example
-app.use('/v1/interact', interactRoute);
+    let gelly = await Gelly.findOne({ userId: user });
+    if (!gelly) {
+      gelly = new Gelly({ userId: user });
+    }
 
-// ---------- Start Server ----------
+    // Apply action
+    switch (action) {
+      case 'feed':
+        gelly.energy = Math.min(100, gelly.energy + 10);
+        break;
+      case 'play':
+        gelly.mood = Math.min(100, gelly.mood + 10);
+        break;
+      case 'clean':
+        gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
+        break;
+      default:
+        if (action.startsWith('color:')) {
+          gelly.color = action.split(':')[1];
+        }
+    }
+
+    gelly.lastUpdated = new Date();
+    await gelly.save();
+
+    res.json({ success: true, message: "Action applied", state: gelly });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+/**
+ * Leaderboard endpoint
+ */
+app.get('/v1/leaderboard', async (req, res) => {
+  try {
+    const leaderboard = await Gelly.find()
+      .sort({ mood: -1, energy: -1 })
+      .limit(10)
+      .select('userId displayName mood energy cleanliness color');
+
+    res.json({ success: true, leaderboard });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+// Start server
 const PORT = process.env.PORT || 3000;
+app.listen(PORT, () =>
+  console.log(`🚀 Server running on port ${PORT}`)
+);
+
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
