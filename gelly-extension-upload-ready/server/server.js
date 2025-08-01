@@ -31,22 +31,27 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// Flexible Twitch CORS
+// ===== Flexible Twitch CORS =====
+const allowedRegexes = [/\.ext-twitch\.tv$/, /\.twitch\.tv$/];
+
 app.use(
   cors({
     origin: (origin, callback) => {
+      if (!origin) return callback(null, true); // Allow server-to-server calls
+
       try {
-        if (!origin) return callback(null, true); // Allow server-to-server / curl
         const hostname = new URL(origin).hostname;
         if (
-          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
-          /\.twitch\.tv$/.test(hostname) || // Twitch main site
+          allowedRegexes.some((rx) => rx.test(hostname)) ||
           hostname === "localhost" ||
           hostname === "127.0.0.1"
         ) {
           return callback(null, true);
         }
-      } catch (_) {}
+      } catch (err) {
+        console.warn("CORS parse error:", err);
+      }
+
       console.warn(`🚫 CORS blocked origin: ${origin}`);
       callback(new Error("CORS not allowed"));
     },
@@ -56,7 +61,7 @@ app.use(
   })
 );
 
-// Explicit OPTIONS handler
+// Explicit OPTIONS preflight handler
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
