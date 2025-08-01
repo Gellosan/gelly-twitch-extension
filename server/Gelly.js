@@ -15,6 +15,5 @@ module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
   stage: { type: String, default: 'egg' },
   color: { type: String, default: 'blue' },
   lastUpdated: { type: Date, default: Date.now }
-});
 
 module.exports = mongoose.model('Gelly', GellySchema);
