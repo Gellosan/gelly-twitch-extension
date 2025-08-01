@@ -36,11 +36,11 @@ app.use(
   cors({
     origin: (origin, callback) => {
       try {
-        if (!origin) return callback(null, true); // Allow server-to-server / curl
+        if (!origin) return callback(null, true);
         const hostname = new URL(origin).hostname;
         if (
-          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
-          /\.twitch\.tv$/.test(hostname) || // Twitch main site
+          /\.ext-twitch\.tv$/.test(hostname) ||
+          /\.twitch\.tv$/.test(hostname) ||
           hostname === "localhost" ||
           hostname === "127.0.0.1"
         ) {
@@ -56,7 +56,6 @@ app.use(
   })
 );
 
-// Explicit OPTIONS handler
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
@@ -110,27 +109,6 @@ async function sendLeaderboard() {
   }
 }
 
-// ===== Persistent Hourly Decay =====
-async function applyHourlyDecay(gelly) {
-  if (!gelly.lastUpdated) gelly.lastUpdated = new Date();
-
-  const now = new Date();
-  const hoursPassed = Math.floor((now - gelly.lastUpdated) / (1000 * 60 * 60));
-
-  if (hoursPassed > 0) {
-    const decayPerHour = { energy: 2, mood: 1, cleanliness: 1 };
-
-    gelly.energy = Math.max(0, gelly.energy - decayPerHour.energy * hoursPassed);
-    gelly.mood = Math.max(0, gelly.mood - decayPerHour.mood * hoursPassed);
-    gelly.cleanliness = Math.max(0, gelly.cleanliness - decayPerHour.cleanliness * hoursPassed);
-
-    gelly.lastUpdated = now;
-    await gelly.save();
-  }
-
-  return gelly;
-}
-
 // ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
   console.log("📥 /v1/interact hit:", req.body);
@@ -141,9 +119,6 @@ app.post("/v1/interact", async (req, res) => {
 
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
-
-    // Apply persistent decay before processing action
-    gelly = await applyHourlyDecay(gelly);
 
     let pointsAwarded = 0;
 
@@ -188,7 +163,39 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
+// ===== Passive Decay Endpoint =====
+app.post("/v1/passive-update", async (req, res) => {
+  try {
+    const { user } = req.body;
+    if (!user) return res.json({ success: false, message: "Missing user ID" });
+
+    let gelly = await Gelly.findOne({ userId: user });
+    if (!gelly) return res.json({ success: false, message: "No Gelly found" });
+
+    // Slow hourly decay
+    gelly.energy = Math.max(0, gelly.energy - 2);
+    gelly.mood = Math.max(0, gelly.mood - 1);
+    gelly.cleanliness = Math.max(0, gelly.cleanliness - 1);
+
+    // Stage logic still applies
+    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
+    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
+
+    gelly.lastUpdated = new Date();
+    await gelly.save();
+
+    broadcastState(user, gelly);
+    sendLeaderboard();
+
+    res.json({ success: true, state: gelly });
+  } catch (err) {
+    console.error("❌ Error in /v1/passive-update:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
+
