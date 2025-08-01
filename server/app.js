@@ -1,12 +1,16 @@
 const express = require('express');
+const cors = require('cors');
 const { sendLeaderboard, broadcastState } = require('./server');
 const Gelly = require('./Gelly');
-const cors = require('cors');
+const interactRoutes = require('./routes/interact');
 
+const app = express(); // Declare app BEFORE using it
+
+// Allowed CORS origins
 const allowedOrigins = [
   'https://*.ext-twitch.tv',
   'https://*.twitch.tv',
-  'https://localhost:3000', // for local testing
+  'https://localhost:3000' // for local testing
 ];
 
 app.use(cors({
@@ -15,14 +19,10 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization'],
   credentials: true
 }));
-const interactRoutes = require('./routes/interact');
-app.use('/v1/interact', interactRoutes);
 
-
-const app = express();
 app.use(express.json());
 
-// Persistent /v1/interact
+// Persistent /v1/interact route
 app.post('/v1/interact', async (req, res) => {
   const { user, action } = req.body;
   if (!user) return res.json({ success: false, message: 'Missing user ID' });
@@ -75,8 +75,9 @@ app.post('/v1/interact', async (req, res) => {
   res.json({ success: true });
 });
 
+app.use('/v1/interact', interactRoutes);
+
 module.exports = app;
-<<<<<<< HEAD
-=======
+
 
 >>>>>>> 802fbf5b8e6d511e5c5a988d384c303a478d3654
