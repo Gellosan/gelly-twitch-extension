@@ -24,6 +24,7 @@ const GellySchema = new mongoose.Schema({
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
   lastUpdated: { type: Date, default: Date.now },
+  createdAt: { type: Date, default: Date.now }, // for stage timing
 });
 const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
@@ -31,25 +32,22 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// ===== CORS for Twitch Extensions =====
+// Flexible Twitch CORS
 app.use(
   cors({
     origin: (origin, callback) => {
       try {
-        if (!origin) return callback(null, true); // server-to-server or curl requests
-
+        if (!origin) return callback(null, true); // Allow server-to-server / curl
         const hostname = new URL(origin).hostname;
-
         if (
-          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
-          /\.twitch\.tv$/.test(hostname) || // Twitch main site
+          /\.ext-twitch\.tv$/.test(hostname) ||
+          /\.twitch\.tv$/.test(hostname) ||
           hostname === "localhost" ||
           hostname === "127.0.0.1"
         ) {
           return callback(null, true);
         }
       } catch (_) {}
-
       console.warn(`🚫 CORS blocked origin: ${origin}`);
       callback(new Error("CORS not allowed"));
     },
@@ -59,13 +57,12 @@ app.use(
   })
 );
 
-// Explicit OPTIONS handler for preflight
+// Explicit OPTIONS handler
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
-
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
@@ -95,11 +92,15 @@ wss.on("connection", (ws, req) => {
   }
 });
 
-function broadcastState(userId, gelly) {
+function sendToUser(userId, payload) {
   const ws = clients.get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
+    ws.send(JSON.stringify(payload));
   }
+}
+
+function broadcastState(userId, gelly) {
+  sendToUser(userId, { type: "update", state: gelly });
 }
 
 async function sendLeaderboard() {
@@ -107,12 +108,52 @@ async function sendLeaderboard() {
     .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
     .limit(10)
     .lean();
-
-  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+  const data = { type: "leaderboard", entries: leaderboard };
   for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
   }
 }
+
+// ===== Passive Gameplay Decay =====
+setInterval(async () => {
+  const now = Date.now();
+  const decayRate = 2; // how much to decay every 10 minutes
+
+  const gellys = await Gelly.find();
+  for (const gelly of gellys) {
+    let changed = false;
+
+    if (gelly.energy > 0) {
+      gelly.energy = Math.max(0, gelly.energy - decayRate);
+      changed = true;
+    }
+    if (gelly.mood > 0) {
+      gelly.mood = Math.max(0, gelly.mood - decayRate);
+      changed = true;
+    }
+    if (gelly.cleanliness > 0) {
+      gelly.cleanliness = Math.max(0, gelly.cleanliness - decayRate);
+      changed = true;
+    }
+
+    // Stage progression based on time and stats
+    const ageMinutes = (now - gelly.createdAt.getTime()) / 60000;
+    if (gelly.stage === "egg" && ageMinutes >= 30 && gelly.energy >= 50) {
+      gelly.stage = "blob";
+      changed = true;
+    }
+    if (gelly.stage === "blob" && ageMinutes >= 120 && gelly.mood >= 50 && gelly.cleanliness >= 50) {
+      gelly.stage = "gelly";
+      changed = true;
+    }
+
+    if (changed) {
+      gelly.lastUpdated = new Date();
+      await gelly.save();
+      broadcastState(gelly.userId, gelly);
+    }
+  }
+}, 10 * 60 * 1000); // every 10 minutes
 
 // ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
@@ -126,24 +167,31 @@ app.post("/v1/interact", async (req, res) => {
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
     let pointsAwarded = 0;
+    let feedbackMsg = "";
 
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
-      if (["blue", "green", "pink"].includes(color)) gelly.color = color;
+      if (["blue", "green", "pink"].includes(color)) {
+        gelly.color = color;
+        feedbackMsg = `Your Gelly changed to a ${color} color!`;
+      }
       pointsAwarded = 1;
     } else {
       switch (action) {
         case "feed":
           gelly.energy = Math.min(100, gelly.energy + 10);
           pointsAwarded = 5;
+          feedbackMsg = "Your Gelly happily slurps up the food!";
           break;
         case "play":
           gelly.mood = Math.min(100, gelly.mood + 10);
           pointsAwarded = 5;
+          feedbackMsg = "Your Gelly wiggles with joy while playing!";
           break;
         case "clean":
           gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
           pointsAwarded = 5;
+          feedbackMsg = "Your Gelly sparkles after a nice cleaning!";
           break;
         default:
           return res.json({ success: false, message: "Unknown action" });
@@ -151,14 +199,14 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     gelly.points += pointsAwarded;
-
-    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
-    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
-
     gelly.lastUpdated = new Date();
     await gelly.save();
 
+    // Send UI updates & feedback to player
     broadcastState(user, gelly);
+    sendToUser(user, { type: "feedback", action, message: feedbackMsg });
+
+    // Update leaderboard
     sendLeaderboard();
 
     res.json({ success: true });
@@ -168,7 +216,6 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
-// ===== Start Server =====
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
