@@ -31,23 +31,24 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// More flexible Twitch CORS
+// Flexible Twitch CORS
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (
-        !origin ||
-        /\.ext-twitch\.tv$/.test(origin) ||
-        /\.ext-twitch\.tv$/.test(new URL(origin).hostname) || // match extension domains
-        /\.twitch\.tv$/.test(origin) ||
-        origin.startsWith("http://localhost") ||
-        origin.startsWith("https://localhost")
-      ) {
-        callback(null, true);
-      } else {
-        console.warn(`🚫 CORS blocked origin: ${origin}`);
-        callback(new Error("CORS not allowed"));
-      }
+      try {
+        if (!origin) return callback(null, true); // Allow server-to-server / curl
+        const hostname = new URL(origin).hostname;
+        if (
+          /\.ext-twitch\.tv$/.test(hostname) || // Twitch extension iframe
+          /\.twitch\.tv$/.test(hostname) || // Twitch main site
+          hostname === "localhost" ||
+          hostname === "127.0.0.1"
+        ) {
+          return callback(null, true);
+        }
+      } catch (_) {}
+      console.warn(`🚫 CORS blocked origin: ${origin}`);
+      callback(new Error("CORS not allowed"));
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -55,7 +56,7 @@ app.use(
   })
 );
 
-// Explicit OPTIONS handler for preflight
+// Explicit OPTIONS handler
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
