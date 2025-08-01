@@ -1,94 +1,104 @@
 const express = require('express');
+const mongoose = require('mongoose');
 const cors = require('cors');
+const Gelly = require('./models/Gelly');
+
 const app = express();
-const http = require('http').createServer(app);
-const WebSocket = require('ws');
-const wss = new WebSocket.Server({ server: http });
-const PORT = process.env.PORT || 3000;
-
-let gellyStates = {};
-let leaderboard = [];
-
-app.use(cors());
 app.use(express.json());
 
-app.post('/interact', (req, res) => {
-  const { user, action } = req.body;
+// ✅ Allow Twitch extension iframe + localhost + your Render panel
+app.use(cors({
+  origin: (origin, callback) => {
+    // Allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
 
-  if (!gellyStates[user]) {
-    gellyStates[user] = {
-      energy: 100,
-      mood: 50,
-      cleanliness: 50,
-      stage: 'egg',
-      color: 'blue',
-    };
+    // Allow Twitch extension iframe domains
+    if (/\.ext-twitch\.tv$/.test(origin)) return callback(null, true);
+
+    // Allow your panel hosting + localhost
+    const allowedOrigins = [
+      'https://gelly-panel-kkp9.onrender.com',
+      'https://gelly-server.onrender.com',
+      'http://localhost:8080',
+      'https://localhost:8080'
+    ];
+    if (allowedOrigins.includes(origin)) return callback(null, true);
+
+    return callback(new Error('CORS not allowed for this origin'));
+  },
+  credentials: true
+}));
+
+// ✅ Handle Twitch's preflight OPTIONS requests
+app.options('*', cors());
+
+// MongoDB connection
+mongoose.connect(
+  "mongodb+srv://Gellosan:SBI3Q64Te41O7050@gellocluster.gzlntn3.mongodb.net/?retryWrites=true&w=majority&appName=GelloCluster",
+  {
+    useNewUrlParser: true,
+    useUnifiedTopology: true
   }
+)
+.then(() => console.log("✅ MongoDB Connected"))
+.catch(err => console.error("❌ Mongo Error:", err));
 
-  const gelly = gellyStates[user];
+/**
+ * Interact endpoint
+ * Expects: { user, action }
+ */
+app.post('/v1/interact', async (req, res) => {
+  try {
+    const { user, action } = req.body;
+    if (!user) return res.status(400).json({ success: false, message: "Missing user" });
 
-  if (action.startsWith('color:')) {
-    const color = action.split(':')[1];
-    if (['blue', 'green', 'pink'].includes(color)) {
-      gelly.color = color;
+    let gelly = await Gelly.findOne({ userId: user });
+    if (!gelly) {
+      gelly = new Gelly({ userId: user });
     }
-    return res.json({ success: true });
-  }
 
-  switch (action) {
-    case 'feed':
-      if (gelly.energy < 100) gelly.energy += 10;
-      break;
-    case 'play':
-      if (gelly.mood < 100) gelly.mood += 10;
-      break;
-    case 'clean':
-      if (gelly.cleanliness < 100) gelly.cleanliness += 10;
-      break;
-    default:
-      return res.json({ success: false, message: 'Unknown action' });
-  }
-
-  // Level up stages
-  if (gelly.stage === 'egg' && gelly.energy >= 100) {
-    gelly.stage = 'blob';
-  } else if (gelly.stage === 'blob' && gelly.mood >= 100 && gelly.cleanliness >= 100) {
-    gelly.stage = 'gelly';
-  }
-
-  updateLeaderboard(user, gelly.mood);
-  broadcastState(user, gelly);
-  res.json({ success: true });
-});
-
-function updateLeaderboard(user, mood) {
-  const existing = leaderboard.find(e => e.user === user);
-  if (existing) {
-    existing.mood = mood;
-  } else {
-    leaderboard.push({ user, mood });
-  }
-  leaderboard.sort((a, b) => b.mood - a.mood);
-}
-
-function broadcastState(user, state) {
-  wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(JSON.stringify({ type: 'update', user, state }));
-      client.send(JSON.stringify({ type: 'leaderboard', entries: leaderboard.slice(0, 5) }));
+    switch (action) {
+      case 'feed':
+        gelly.energy = Math.min(100, gelly.energy + 10);
+        break;
+      case 'play':
+        gelly.mood = Math.min(100, gelly.mood + 10);
+        break;
+      case 'clean':
+        gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
+        break;
+      default:
+        if (action.startsWith('color:')) {
+          gelly.color = action.split(':')[1];
+        }
     }
-  });
-}
 
-wss.on('connection', (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const user = url.searchParams.get('user');
-  if (user && gellyStates[user]) {
-    ws.send(JSON.stringify({ type: 'update', state: gellyStates[user] }));
-    ws.send(JSON.stringify({ type: 'leaderboard', entries: leaderboard.slice(0, 5) }));
+    gelly.lastUpdated = new Date();
+    await gelly.save();
+
+    res.json({ success: true, message: "Action applied", state: gelly });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-http.listen(PORT, () => {
-  console.log(`Server listening on port ${PORT}`);
+/**
+ * Leaderboard endpoint
+ */
+app.get('/v1/leaderboard', async (req, res) => {
+  try {
+    const leaderboard = await Gelly.find()
+      .sort({ mood: -1, energy: -1 })
+      .limit(10)
+      .select('userId displayName mood energy cleanliness color');
+
+    res.json({ success: true, leaderboard });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
 });
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
