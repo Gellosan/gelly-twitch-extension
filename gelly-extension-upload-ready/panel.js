@@ -134,3 +134,4 @@ window.Twitch.ext.onAuthorized(function (auth) {
   // ✅ Start WebSocket connection
   connectWebSocket();
 });
+
