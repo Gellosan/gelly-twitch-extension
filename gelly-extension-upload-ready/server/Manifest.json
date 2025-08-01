@@ -1,0 +1,38 @@
+{
+  "manifest_version": 1,
+  "type": "panel",
+  "author_name": "Gellosan",
+  "description": "Take care of your blob-like Gelly using loyalty points!",
+  "version": "0.0.1",
+  "name": "Gelly Panel Extension",
+  "homepage": "https://gelly-server.onrender.com", 
+
+  "panel_height": 600,
+
+  "allowlisted_urls": [
+    "https://gelly-server.onrender.com",
+    "wss://gelly-server.onrender.com"
+  ],
+
+  "permissions": [
+    "chat",
+    "bits",
+    "channel_points",
+    "video-playback"
+  ],
+
+  "content_security_policy": {
+    "default-src": "'self';",
+    "script-src": "'self';",
+    "style-src": "'self' 'unsafe-inline';",
+    "connect-src": "'self' wss://gelly-server.onrender.com https://gelly-server.onrender.com https://api.twitch.tv wss://pubsub-edge.twitch.tv;"
+  },
+
+  "vendor_code": {
+    "backend": false
+  },
+
+  "whitelisted_panel_urls": [
+    "https://https://gelly-server.onrender.com/panel.html"
+  ]
+}
