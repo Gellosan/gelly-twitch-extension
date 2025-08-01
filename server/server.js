@@ -32,19 +32,20 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-const allowedOrigins = [
-  /\.ext-twitch\.tv$/,
-  /\.twitch\.tv$/,
-  "http://localhost:3000",
-  "https://localhost:3000",
-];
-
+// Dynamically allow Twitch extension origins
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.some((o) => (typeof o === "string" ? o === origin : o.test(origin)))) {
+      if (
+        !origin ||
+        /\.ext-twitch\.tv$/.test(origin) ||
+        /\.twitch\.tv$/.test(origin) ||
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("https://localhost")
+      ) {
         callback(null, true);
       } else {
+        console.warn(`🚫 CORS blocked origin: ${origin}`);
         callback(new Error("CORS not allowed"));
       }
     },
@@ -62,14 +63,14 @@ const clients = new Map();
 
 wss.on("connection", (ws, req) => {
   try {
-    const urlParams = new URLSearchParams(req.url.replace("/", ""));
-    const userId = urlParams.get("user");
+    const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+    const userId = searchParams.get("user");
 
     if (userId) {
       clients.set(userId, ws);
       console.log(`🔌 WebSocket connected for user: ${userId}`);
     } else {
-      console.warn("⚠️ WebSocket connected without a userId");
+      console.warn("⚠️ WebSocket connection without userId");
     }
 
     ws.on("close", () => {
@@ -83,7 +84,7 @@ wss.on("connection", (ws, req) => {
       console.error(`🚨 WebSocket error for user: ${userId}`, err);
     });
   } catch (e) {
-    console.error("🚨 Error in WebSocket connection handler:", e);
+    console.error("🚨 Error in WebSocket handler:", e);
   }
 });
 
@@ -112,16 +113,10 @@ app.post("/v1/interact", async (req, res) => {
 
   try {
     const { user, action } = req.body;
-    if (!user) {
-      console.warn("⚠️ Missing user in /v1/interact");
-      return res.json({ success: false, message: "Missing user ID" });
-    }
+    if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
-    if (!gelly) {
-      console.log(`🆕 Creating new Gelly for user: ${user}`);
-      gelly = new Gelly({ userId: user, points: 0 });
-    }
+    if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
     let pointsAwarded = 0;
 
@@ -144,7 +139,6 @@ app.post("/v1/interact", async (req, res) => {
           pointsAwarded = 5;
           break;
         default:
-          console.warn(`⚠️ Unknown action received: ${action}`);
           return res.json({ success: false, message: "Unknown action" });
       }
     }
@@ -157,8 +151,6 @@ app.post("/v1/interact", async (req, res) => {
     gelly.lastUpdated = new Date();
     await gelly.save();
 
-    console.log(`✅ Updated Gelly for user ${user}:`, gelly.toObject());
-
     broadcastState(user, gelly);
     sendLeaderboard();
 
@@ -169,7 +161,6 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
-// ===== Start Server =====
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
