@@ -24,7 +24,6 @@ const GellySchema = new mongoose.Schema({
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
   lastUpdated: { type: Date, default: Date.now },
-  createdAt: { type: Date, default: Date.now }, // for stage timing
 });
 const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
@@ -37,7 +36,7 @@ app.use(
   cors({
     origin: (origin, callback) => {
       try {
-        if (!origin) return callback(null, true); // Allow server-to-server / curl
+        if (!origin) return callback(null, true);
         const hostname = new URL(origin).hostname;
         if (
           /\.ext-twitch\.tv$/.test(hostname) ||
@@ -57,7 +56,6 @@ app.use(
   })
 );
 
-// Explicit OPTIONS handler
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
@@ -92,10 +90,10 @@ wss.on("connection", (ws, req) => {
   }
 });
 
-function sendToUser(userId, payload) {
+function sendToUser(userId, data) {
   const ws = clients.get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(payload));
+    ws.send(JSON.stringify(data));
   }
 }
 
@@ -103,57 +101,39 @@ function broadcastState(userId, gelly) {
   sendToUser(userId, { type: "update", state: gelly });
 }
 
+function sendFeedback(userId, message) {
+  sendToUser(userId, { type: "feedback", message });
+}
+
 async function sendLeaderboard() {
   const leaderboard = await Gelly.find()
     .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
     .limit(10)
     .lean();
-  const data = { type: "leaderboard", entries: leaderboard };
+
+  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
 
-// ===== Passive Gameplay Decay =====
+// ===== Passive Stat Decay =====
 setInterval(async () => {
   const now = Date.now();
-  const decayRate = 2; // how much to decay every 10 minutes
-
+  const decayRate = 1; // slower passive game
   const gellys = await Gelly.find();
   for (const gelly of gellys) {
-    let changed = false;
-
-    if (gelly.energy > 0) {
+    const minutesSinceUpdate = (now - gelly.lastUpdated.getTime()) / 60000;
+    if (minutesSinceUpdate >= 1) {
       gelly.energy = Math.max(0, gelly.energy - decayRate);
-      changed = true;
-    }
-    if (gelly.mood > 0) {
       gelly.mood = Math.max(0, gelly.mood - decayRate);
-      changed = true;
-    }
-    if (gelly.cleanliness > 0) {
       gelly.cleanliness = Math.max(0, gelly.cleanliness - decayRate);
-      changed = true;
-    }
-
-    // Stage progression based on time and stats
-    const ageMinutes = (now - gelly.createdAt.getTime()) / 60000;
-    if (gelly.stage === "egg" && ageMinutes >= 30 && gelly.energy >= 50) {
-      gelly.stage = "blob";
-      changed = true;
-    }
-    if (gelly.stage === "blob" && ageMinutes >= 120 && gelly.mood >= 50 && gelly.cleanliness >= 50) {
-      gelly.stage = "gelly";
-      changed = true;
-    }
-
-    if (changed) {
       gelly.lastUpdated = new Date();
       await gelly.save();
       broadcastState(gelly.userId, gelly);
     }
   }
-}, 10 * 60 * 1000); // every 10 minutes
+}, 60000); // every minute
 
 // ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
@@ -167,13 +147,13 @@ app.post("/v1/interact", async (req, res) => {
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
     let pointsAwarded = 0;
-    let feedbackMsg = "";
+    let feedbackMessage = "";
 
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
       if (["blue", "green", "pink"].includes(color)) {
         gelly.color = color;
-        feedbackMsg = `Your Gelly changed to a ${color} color!`;
+        feedbackMessage = `🎨 Your Gelly is now ${color}!`;
       }
       pointsAwarded = 1;
     } else {
@@ -181,17 +161,17 @@ app.post("/v1/interact", async (req, res) => {
         case "feed":
           gelly.energy = Math.min(100, gelly.energy + 10);
           pointsAwarded = 5;
-          feedbackMsg = "Your Gelly happily slurps up the food!";
+          feedbackMessage = "🍎 You fed your Gelly!";
           break;
         case "play":
           gelly.mood = Math.min(100, gelly.mood + 10);
           pointsAwarded = 5;
-          feedbackMsg = "Your Gelly wiggles with joy while playing!";
+          feedbackMessage = "🎮 You played with your Gelly!";
           break;
         case "clean":
           gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
           pointsAwarded = 5;
-          feedbackMsg = "Your Gelly sparkles after a nice cleaning!";
+          feedbackMessage = "🛁 You cleaned your Gelly!";
           break;
         default:
           return res.json({ success: false, message: "Unknown action" });
@@ -199,15 +179,16 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     gelly.points += pointsAwarded;
+
+    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
+    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
+
     gelly.lastUpdated = new Date();
     await gelly.save();
 
-    // Send UI updates & feedback to player
     broadcastState(user, gelly);
-    sendToUser(user, { type: "feedback", action, message: feedbackMsg });
-
-    // Update leaderboard
     sendLeaderboard();
+    if (feedbackMessage) sendFeedback(user, feedbackMessage);
 
     res.json({ success: true });
   } catch (err) {
