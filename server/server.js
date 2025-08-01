@@ -33,22 +33,28 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// Looser CORS for Twitch dev
+// ===== Twitch-friendly CORS Setup =====
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (
-        !origin ||
-        /\.ext-twitch\.tv$/.test(origin) || // Twitch extensions
-        /\.twitch\.tv$/.test(origin) ||     // Twitch main site
-        origin.startsWith("http://localhost") ||
-        origin.startsWith("https://localhost")
-      ) {
-        callback(null, true);
-      } else {
-        console.warn(`❌ CORS blocked origin: ${origin}`);
-        callback(new Error("CORS not allowed"));
+      if (!origin) return callback(null, true); // Allow server-to-server / Postman calls
+
+      try {
+        const hostname = new URL(origin).hostname;
+
+        if (
+          /\.ext-twitch\.tv$/.test(hostname) || // Twitch Extension domains
+          /\.twitch\.tv$/.test(hostname) ||     // Twitch main site domains
+          hostname === "localhost"              // Local testing
+        ) {
+          return callback(null, true);
+        }
+      } catch (e) {
+        console.warn("⚠️ Invalid origin format:", origin);
       }
+
+      console.warn(`❌ CORS blocked for origin: ${origin}`);
+      return callback(new Error("CORS not allowed"));
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
@@ -63,8 +69,8 @@ const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
-  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const userId = searchParams.get("user");
+  const urlParams = new URLSearchParams(req.url.replace("/", ""));
+  const userId = urlParams.get("user");
 
   if (userId) {
     clients.set(userId, ws);
