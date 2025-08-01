@@ -33,19 +33,20 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-const allowedOrigins = [
-  /\.ext-twitch\.tv$/,
-  /\.twitch\.tv$/,
-  "http://localhost:3000", // Local testing
-  "https://localhost:3000",
-];
-
+// Looser CORS for Twitch dev
 app.use(
   cors({
     origin: (origin, callback) => {
-      if (!origin || allowedOrigins.some((o) => (typeof o === "string" ? o === origin : o.test(origin)))) {
+      if (
+        !origin ||
+        /\.ext-twitch\.tv$/.test(origin) || // Twitch extensions
+        /\.twitch\.tv$/.test(origin) ||     // Twitch main site
+        origin.startsWith("http://localhost") ||
+        origin.startsWith("https://localhost")
+      ) {
         callback(null, true);
       } else {
+        console.warn(`❌ CORS blocked origin: ${origin}`);
         callback(new Error("CORS not allowed"));
       }
     },
@@ -62,8 +63,9 @@ const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
-  const urlParams = new URLSearchParams(req.url.replace("/", ""));
-  const userId = urlParams.get("user");
+  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+  const userId = searchParams.get("user");
+
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected: ${userId}`);
@@ -83,72 +85,5 @@ function broadcastState(userId, gelly) {
 
 async function sendLeaderboard() {
   const leaderboard = await Gelly.find()
-    .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
-    .limit(10)
-    .lean();
+    .sort({ points: -1, mood: -1, ene
 
-  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
-  for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
-  }
-}
-
-// ===== Interact Endpoint =====
-app.post("/v1/interact", async (req, res) => {
-  try {
-    const { user, action } = req.body;
-    if (!user) return res.json({ success: false, message: "Missing user ID" });
-
-    let gelly = await Gelly.findOne({ userId: user });
-    if (!gelly) {
-      gelly = new Gelly({ userId: user, points: 0 });
-    }
-
-    let pointsAwarded = 0;
-
-    if (action.startsWith("color:")) {
-      const color = action.split(":")[1];
-      if (["blue", "green", "pink"].includes(color)) gelly.color = color;
-      pointsAwarded = 1;
-    } else {
-      switch (action) {
-        case "feed":
-          gelly.energy = Math.min(100, gelly.energy + 10);
-          pointsAwarded = 5;
-          break;
-        case "play":
-          gelly.mood = Math.min(100, gelly.mood + 10);
-          pointsAwarded = 5;
-          break;
-        case "clean":
-          gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
-          pointsAwarded = 5;
-          break;
-        default:
-          return res.json({ success: false, message: "Unknown action" });
-      }
-    }
-
-    gelly.points += pointsAwarded;
-
-    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
-    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
-
-    gelly.lastUpdated = new Date();
-    await gelly.save();
-
-    broadcastState(user, gelly);
-    sendLeaderboard();
-
-    res.json({ success: true });
-  } catch (err) {
-    console.error("❌ Error in /v1/interact:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-// ===== Start Server =====
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-});
