@@ -1,104 +1,154 @@
-const express = require('express');
-const mongoose = require('mongoose');
-const cors = require('cors');
-const Gelly = require('./models/Gelly');
+// server.js
+const express = require("express");
+const mongoose = require("mongoose");
+const cors = require("cors");
+const WebSocket = require("ws");
+require("dotenv").config();
 
+// ===== MongoDB Connection =====
+mongoose
+  .connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch((err) => console.error("❌ Mongo Error:", err));
+
+// ===== Gelly Model =====
+const GellySchema = new mongoose.Schema({
+  userId: { type: String, required: true, unique: true },
+  displayName: String,
+  energy: { type: Number, default: 100 },
+  mood: { type: Number, default: 50 },
+  cleanliness: { type: Number, default: 50 },
+  stage: { type: String, default: "egg" },
+  color: { type: String, default: "blue" },
+  points: { type: Number, default: 0 },
+  lastUpdated: { type: Date, default: Date.now },
+});
+
+const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
+
+// ===== Express Setup =====
 const app = express();
 app.use(express.json());
 
-// ✅ Allow Twitch extension iframe + localhost + your Render panel
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (like mobile apps or curl)
-    if (!origin) return callback(null, true);
+const allowedOrigins = [
+  /\.ext-twitch\.tv$/,
+  /\.twitch\.tv$/,
+  "http://localhost:3000", // Local testing
+  "https://localhost:3000",
+];
 
-    // Allow Twitch extension iframe domains
-    if (/\.ext-twitch\.tv$/.test(origin)) return callback(null, true);
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      if (!origin || allowedOrigins.some((o) => (typeof o === "string" ? o === origin : o.test(origin)))) {
+        callback(null, true);
+      } else {
+        callback(new Error("CORS not allowed"));
+      }
+    },
+    methods: ["GET", "POST", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+    credentials: true,
+  })
+);
 
-    // Allow your panel hosting + localhost
-    const allowedOrigins = [
-      'https://gelly-panel-kkp9.onrender.com',
-      'https://gelly-server.onrender.com',
-      'http://localhost:8080',
-      'https://localhost:8080'
-    ];
-    if (allowedOrigins.includes(origin)) return callback(null, true);
+// ===== WebSocket Setup =====
+const server = require("http").createServer(app);
+const wss = new WebSocket.Server({ server });
 
-    return callback(new Error('CORS not allowed for this origin'));
-  },
-  credentials: true
-}));
+const clients = new Map();
 
-// ✅ Handle Twitch's preflight OPTIONS requests
-app.options('*', cors());
-
-// MongoDB connection
-mongoose.connect(
-  "mongodb+srv://Gellosan:SBI3Q64Te41O7050@gellocluster.gzlntn3.mongodb.net/?retryWrites=true&w=majority&appName=GelloCluster",
-  {
-    useNewUrlParser: true,
-    useUnifiedTopology: true
+wss.on("connection", (ws, req) => {
+  const urlParams = new URLSearchParams(req.url.replace("/", ""));
+  const userId = urlParams.get("user");
+  if (userId) {
+    clients.set(userId, ws);
+    console.log(`🔌 WebSocket connected: ${userId}`);
   }
-)
-.then(() => console.log("✅ MongoDB Connected"))
-.catch(err => console.error("❌ Mongo Error:", err));
 
-/**
- * Interact endpoint
- * Expects: { user, action }
- */
-app.post('/v1/interact', async (req, res) => {
+  ws.on("close", () => {
+    if (userId) clients.delete(userId);
+  });
+});
+
+function broadcastState(userId, gelly) {
+  const ws = clients.get(userId);
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "update", state: gelly }));
+  }
+}
+
+async function sendLeaderboard() {
+  const leaderboard = await Gelly.find()
+    .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
+    .limit(10)
+    .lean();
+
+  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+  for (const [, ws] of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
+
+// ===== Interact Endpoint =====
+app.post("/v1/interact", async (req, res) => {
   try {
     const { user, action } = req.body;
-    if (!user) return res.status(400).json({ success: false, message: "Missing user" });
+    if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) {
-      gelly = new Gelly({ userId: user });
+      gelly = new Gelly({ userId: user, points: 0 });
     }
 
-    switch (action) {
-      case 'feed':
-        gelly.energy = Math.min(100, gelly.energy + 10);
-        break;
-      case 'play':
-        gelly.mood = Math.min(100, gelly.mood + 10);
-        break;
-      case 'clean':
-        gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
-        break;
-      default:
-        if (action.startsWith('color:')) {
-          gelly.color = action.split(':')[1];
-        }
+    let pointsAwarded = 0;
+
+    if (action.startsWith("color:")) {
+      const color = action.split(":")[1];
+      if (["blue", "green", "pink"].includes(color)) gelly.color = color;
+      pointsAwarded = 1;
+    } else {
+      switch (action) {
+        case "feed":
+          gelly.energy = Math.min(100, gelly.energy + 10);
+          pointsAwarded = 5;
+          break;
+        case "play":
+          gelly.mood = Math.min(100, gelly.mood + 10);
+          pointsAwarded = 5;
+          break;
+        case "clean":
+          gelly.cleanliness = Math.min(100, gelly.cleanliness + 10);
+          pointsAwarded = 5;
+          break;
+        default:
+          return res.json({ success: false, message: "Unknown action" });
+      }
     }
+
+    gelly.points += pointsAwarded;
+
+    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
+    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
 
     gelly.lastUpdated = new Date();
     await gelly.save();
 
-    res.json({ success: true, message: "Action applied", state: gelly });
+    broadcastState(user, gelly);
+    sendLeaderboard();
+
+    res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    console.error("❌ Error in /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-/**
- * Leaderboard endpoint
- */
-app.get('/v1/leaderboard', async (req, res) => {
-  try {
-    const leaderboard = await Gelly.find()
-      .sort({ mood: -1, energy: -1 })
-      .limit(10)
-      .select('userId displayName mood energy cleanliness color');
-
-    res.json({ success: true, leaderboard });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
+// ===== Start Server =====
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
 });
-
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
