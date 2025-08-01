@@ -7,7 +7,7 @@ const GellySchema = new mongoose.Schema({
 // ✅ This prevents OverwriteModelError
 module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
-  userId: { type: String, required true, unique: true },
+  userId: { type: String, unique: true },
   displayName: String,
   energy: { type: Number, default: 100 },
   mood: { type: Number, default: 50 },
