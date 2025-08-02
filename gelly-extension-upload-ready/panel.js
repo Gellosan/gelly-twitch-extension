@@ -9,6 +9,23 @@ window.Twitch.ext.onAuthorized(function (auth) {
   const SERVER_URL = "https://gelly-server.onrender.com";
 
   // ========================
+  // COOLDOWN SETTINGS
+  // ========================
+  const COOLDOWN_MS = 60000; // 60 seconds per action
+  const lastActionTimes = { feed: 0, play: 0, clean: 0, color: 0 };
+
+  function canUseAction(action) {
+    const now = Date.now();
+    if (now - lastActionTimes[action] < COOLDOWN_MS) {
+      const remaining = Math.ceil((COOLDOWN_MS - (now - lastActionTimes[action])) / 1000);
+      showTempMessage(`Please wait ${remaining}s before ${action} again.`, "yellow");
+      return false;
+    }
+    lastActionTimes[action] = now;
+    return true;
+  }
+
+  // ========================
   // FEEDBACK & ANIMATION
   // ========================
   function showTempMessage(msg, color = "#fff") {
@@ -66,13 +83,15 @@ window.Twitch.ext.onAuthorized(function (auth) {
       return showTempMessage("User not authenticated.", "red");
     }
 
+    // Respect per-action cooldown
+    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    if (!canUseAction(cooldownKey)) return;
+
     console.log(`[DEBUG] Sending action to server: ${action}`);
 
-    // Different text for play
     const actionMessage =
       action === "play" ? "You play with your Gelly!" : `You ${action} your Gelly!`;
 
-    // Instant animation + feedback BEFORE network finishes
     animateGelly(action.includes("color:") ? "color" : action);
     showTempMessage(actionMessage, "#0f0");
 
@@ -140,6 +159,10 @@ window.Twitch.ext.onAuthorized(function (auth) {
     } else if (stage === "gelly") {
       gellyImage.src = `assets/gelly-${color}.png`;
     }
+
+    // Ensure proper scaling
+    gellyImage.style.maxWidth = "100%";
+    gellyImage.style.height = "auto";
   }
 
   function showHelp() {
@@ -154,13 +177,12 @@ window.Twitch.ext.onAuthorized(function (auth) {
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
-
   document.getElementById("gellyColor")?.addEventListener("change", (e) => {
     const color = e.target.value;
     interact(`color:${color}`);
   });
-
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 
   connectWebSocket();
 });
+
