@@ -1,4 +1,3 @@
-// ===== server.js =====
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -170,7 +169,6 @@ app.post("/v1/interact", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    // Ensure Twitch loginName is set
     if (!gelly.displayName || !gelly.loginName) {
       const twitchData = await fetchTwitchUserData(user);
       if (twitchData) {
@@ -202,12 +200,19 @@ app.post("/v1/interact", async (req, res) => {
         gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
         actionSucceeded = true;
         break;
+      case "startgame":
+        gelly.points = 0;
+        gelly.energy = 100;
+        gelly.mood = 100;
+        gelly.cleanliness = 100;
+        gelly.lastUpdated = new Date();
+        actionSucceeded = true;
+        break;
       default:
         return res.json({ success: false, message: "Unknown action" });
     }
 
     if (actionSucceeded) {
-      gelly.lastUpdated = new Date();
       await gelly.save();
 
       const updatedBalance = await getUserPoints(usernameForPoints);
