@@ -6,7 +6,6 @@ const WebSocket = require("ws");
 require("dotenv").config();
 const Gelly = require("./Gelly.js");
 
-// ===== MongoDB Connection =====
 mongoose
   .connect(process.env.MONGODB_URI, {
     useNewUrlParser: true,
@@ -15,7 +14,6 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ Mongo Error:", err));
 
-// ===== Express Setup =====
 const app = express();
 app.use(express.json());
 app.use(
@@ -41,7 +39,6 @@ app.use(
 );
 app.options("*", cors());
 
-// ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
@@ -81,13 +78,12 @@ async function sendLeaderboard() {
   }
 }
 
-// ===== Twitch & StreamElements Helpers =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
-async function fetchTwitchDisplayName(userId) {
+async function fetchTwitchUserData(userId) {
   try {
     const res = await fetch(`https://api.twitch.tv/helix/users?id=${userId}`, {
       headers: {
@@ -97,7 +93,10 @@ async function fetchTwitchDisplayName(userId) {
     });
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.data?.[0]?.display_name || null;
+    const user = data?.data?.[0];
+    return user
+      ? { displayName: user.display_name, loginName: user.login }
+      : null;
   } catch {
     return null;
   }
@@ -137,7 +136,6 @@ async function deductUserPoints(username, amount) {
   } catch {}
 }
 
-// ===== New: Initial State Endpoint =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -148,19 +146,17 @@ app.get("/v1/state/:userId", async (req, res) => {
       gelly = new Gelly({ userId, points: 0 });
     }
 
-    // Apply decay if available
     if (typeof gelly.applyDecay === "function") {
       gelly.applyDecay();
     }
 
     await gelly.save();
     res.json({ success: true, state: gelly });
-  } catch (err) {
+  } catch {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
   try {
     const { user, action } = req.body;
@@ -169,23 +165,28 @@ app.post("/v1/interact", async (req, res) => {
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
-    // Apply decay
     if (typeof gelly.applyDecay === "function") {
       gelly.applyDecay();
     }
 
-    // Fetch and store display name if missing
-    if (!gelly.displayName) {
-      gelly.displayName = (await fetchTwitchDisplayName(user)) || "Unknown";
+    if (!gelly.displayName || !gelly.loginName) {
+      const twitchData = await fetchTwitchUserData(user);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      } else {
+        gelly.displayName = "Unknown";
+        gelly.loginName = "unknown";
+      }
     }
-    const username = gelly.displayName;
 
-    // Per-action cooldowns (ms)
+    const usernameForPoints = gelly.loginName;
+
     const ACTION_COOLDOWNS = {
-      feed: 300000,  // 5 min
-      clean: 240000, // 4 min
-      play: 180000,  // 3 min
-      color: 60000   // 1 min
+      feed: 300000,
+      clean: 240000,
+      play: 180000,
+      color: 60000
     };
 
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -198,49 +199,56 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     let pointsAwarded = 0;
+    let actionSucceeded = false;
+
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
-      if (await getUserPoints(username) < 10000) {
+      if (await getUserPoints(usernameForPoints) < 10000) {
         return res.json({ success: false, message: "Not enough Jellybeans for color change." });
       }
-      await deductUserPoints(username, 10000);
+      await deductUserPoints(usernameForPoints, 10000);
       gelly.color = color;
       pointsAwarded = 1;
+      actionSucceeded = true;
     } else {
       switch (action) {
         case "feed":
-          if (await getUserPoints(username) < 1000) {
+          if (await getUserPoints(usernameForPoints) < 1000) {
             return res.json({ success: false, message: "Not enough Jellybeans to feed." });
           }
-          await deductUserPoints(username, 1000);
+          await deductUserPoints(usernameForPoints, 1000);
           gelly.energy = Math.min(500, gelly.energy + 20);
           pointsAwarded = 5;
+          actionSucceeded = true;
           break;
         case "play":
           gelly.mood = Math.min(500, gelly.mood + 20);
           pointsAwarded = 5;
+          actionSucceeded = true;
           break;
         case "clean":
           gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
           pointsAwarded = 5;
+          actionSucceeded = true;
           break;
         default:
           return res.json({ success: false, message: "Unknown action" });
       }
     }
 
-    // Stage evolution
-    if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
-    if (gelly.stage === "blob" && gelly.mood >= 400 && gelly.cleanliness >= 400)
-      gelly.stage = "gelly";
+    if (actionSucceeded) {
+      if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
+      if (gelly.stage === "blob" && gelly.mood >= 400 && gelly.cleanliness >= 400) gelly.stage = "gelly";
 
-    gelly.points += pointsAwarded;
-    gelly.lastUpdated = now;
-    gelly.lastActionTimes[cooldownKey] = now;
-    await gelly.save();
+      gelly.points += pointsAwarded;
+      gelly.lastUpdated = now;
+      gelly.lastActionTimes[cooldownKey] = now;
+      await gelly.save();
 
-    broadcastState(user, gelly);
-    sendLeaderboard();
+      broadcastState(user, gelly);
+      sendLeaderboard();
+    }
+
     res.json({ success: true });
   } catch (err) {
     console.error(err);
