@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
+const Gelly = require("./Gelly"); // <-- ensure Gelly model has applyDecay()
 
 // ===== MongoDB Connection =====
 mongoose
@@ -14,30 +15,9 @@ mongoose
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ Mongo Error:", err));
 
-// ===== Gelly Model =====
-const GellySchema = new mongoose.Schema({
-  userId: { type: String, required: true, unique: true },
-  displayName: String,
-  energy: { type: Number, default: 100 },
-  mood: { type: Number, default: 50 },
-  cleanliness: { type: Number, default: 50 },
-  stage: { type: String, default: "egg" },
-  color: { type: String, default: "blue" },
-  points: { type: Number, default: 0 },
-  lastUpdated: { type: Date, default: Date.now },
-  lastActionTimes: {
-    feed: { type: Date, default: new Date(0) },
-    play: { type: Date, default: new Date(0) },
-    clean: { type: Date, default: new Date(0) },
-    colorChange: { type: Date, default: new Date(0) },
-  },
-});
-const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
-
 // ===== Express Setup =====
 const app = express();
 app.use(express.json());
-
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -101,8 +81,27 @@ async function sendLeaderboard() {
   }
 }
 
-// ===== STREAM ELEMENTS HELPERS =====
+// ===== Twitch & StreamElements Helpers (unchanged from our last working version) =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
+
+async function fetchTwitchDisplayName(userId) {
+  try {
+    const res = await fetch(`https://api.twitch.tv/helix/users?id=${userId}`, {
+      headers: {
+        "Client-ID": TWITCH_CLIENT_ID,
+        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`
+      }
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.data?.[0]?.display_name || null;
+  } catch {
+    return null;
+  }
+}
 
 const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
 const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
@@ -110,67 +109,87 @@ const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 
 async function getUserPoints(username) {
   try {
-    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
-    const res = await fetch(url, {
-      headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` },
-    });
-
-    if (!res.ok) {
-      console.error(`StreamElements API error (${res.status}):`, await res.text());
-      return 0;
-    }
-
+    const res = await fetch(
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
+    );
+    if (!res.ok) return 0;
     const data = await res.json();
     return data?.points || 0;
-  } catch (err) {
-    console.error("❌ getUserPoints error:", err);
+  } catch {
     return 0;
   }
 }
 
 async function deductUserPoints(username, amount) {
   try {
-    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
-    const res = await fetch(url, {
-      method: "PUT",
-      headers: {
-        Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ points: -Math.abs(amount) }),
-    });
-
-    if (!res.ok) {
-      console.error(`StreamElements API error (${res.status}):`, await res.text());
-    }
-  } catch (err) {
-    console.error("❌ deductUserPoints error:", err);
-  }
+    await fetch(
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      {
+        method: "PUT",
+        headers: {
+          Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ points: -Math.abs(amount) }),
+      }
+    );
+  } catch {}
 }
+
+// ===== New: Initial State Endpoint =====
+app.get("/v1/state/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    if (!userId) return res.json({ success: false, message: "Missing user ID" });
+
+    let gelly = await Gelly.findOne({ userId });
+    if (!gelly) {
+      gelly = new Gelly({ userId, points: 0 });
+    }
+
+    // Apply decay if available
+    if (typeof gelly.applyDecay === "function") {
+      gelly.applyDecay();
+    }
+
+    await gelly.save();
+    res.json({ success: true, state: gelly });
+  } catch (err) {
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 // ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
   try {
-    const { user, username, action } = req.body; // Now expecting Twitch display name
-    if (!user || !username) {
-      return res.json({ success: false, message: "Missing user or username" });
-    }
+    const { user, action } = req.body;
+    if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
-    if (!gelly) gelly = new Gelly({ userId: user, displayName: username, points: 0 });
+    if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
-    // Per-action cooldown (60s)
+    // Apply decay
+    if (typeof gelly.applyDecay === "function") {
+      gelly.applyDecay();
+    }
+
+    // Fetch and store display name if missing
+    if (!gelly.displayName) {
+      gelly.displayName = (await fetchTwitchDisplayName(user)) || "Unknown";
+    }
+    const username = gelly.displayName;
+
+    // Per-action cooldown
     const now = new Date();
     if (gelly.lastActionTimes[action] && now - gelly.lastActionTimes[action] < 60000) {
       return res.json({ success: false, message: "That action is on cooldown." });
     }
 
     let pointsAwarded = 0;
-
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
-      const userPoints = await getUserPoints(username);
-      if (userPoints < 10000) {
+      if (await getUserPoints(username) < 10000) {
         return res.json({ success: false, message: "Not enough Jellybeans for color change." });
       }
       await deductUserPoints(username, 10000);
@@ -179,8 +198,7 @@ app.post("/v1/interact", async (req, res) => {
     } else {
       switch (action) {
         case "feed":
-          const feedPoints = await getUserPoints(username);
-          if (feedPoints < 1000) {
+          if (await getUserPoints(username) < 1000) {
             return res.json({ success: false, message: "Not enough Jellybeans to feed." });
           }
           await deductUserPoints(username, 1000);
@@ -200,7 +218,7 @@ app.post("/v1/interact", async (req, res) => {
       }
     }
 
-    // Growth logic
+    // Stage evolution
     if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
     if (gelly.stage === "blob" && gelly.mood >= 400 && gelly.cleanliness >= 400)
       gelly.stage = "gelly";
@@ -212,14 +230,11 @@ app.post("/v1/interact", async (req, res) => {
 
     broadcastState(user, gelly);
     sendLeaderboard();
-
     res.json({ success: true });
   } catch (err) {
-    console.error("❌ Error in /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
