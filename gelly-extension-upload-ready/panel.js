@@ -8,14 +8,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
 
   const SERVER_URL = "https://gelly-server.onrender.com";
 
-  // Track last action times locally (per action)
-  const lastActionTimes = {
-    feed: 0,
-    play: 0,
-    clean: 0
-  };
-  const COOLDOWN_MS = 60000; // 60 seconds
-
   // ========================
   // FEEDBACK & ANIMATION
   // ========================
@@ -28,7 +20,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
 
     setTimeout(() => {
       el.style.opacity = "0";
-    }, 2000);
+    }, 2500);
   }
 
   function animateGelly(action) {
@@ -74,27 +66,15 @@ window.Twitch.ext.onAuthorized(function (auth) {
       return showTempMessage("User not authenticated.", "red");
     }
 
-    // Cooldown check (per action)
-    const now = Date.now();
-    if (now - lastActionTimes[action] < COOLDOWN_MS) {
-      const remaining = Math.ceil((COOLDOWN_MS - (now - lastActionTimes[action])) / 1000);
-      return showTempMessage(`Please wait ${remaining}s before doing that again.`, "yellow");
-    }
-
-    // Save time locally
-    lastActionTimes[action] = now;
-
     console.log(`[DEBUG] Sending action to server: ${action}`);
 
+    // Different text for play
+    const actionMessage =
+      action === "play" ? "You play with your Gelly!" : `You ${action} your Gelly!`;
+
     // Instant animation + feedback BEFORE network finishes
-    animateGelly(action);
-    if (action === "play") {
-      showTempMessage("You play with your Gelly!", "#0f0");
-    } else if (action === "feed") {
-      showTempMessage("You feed your Gelly!", "#0f0");
-    } else if (action === "clean") {
-      showTempMessage("You clean your Gelly!", "#0f0");
-    }
+    animateGelly(action.includes("color:") ? "color" : action);
+    showTempMessage(actionMessage, "#0f0");
 
     fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
@@ -102,16 +82,16 @@ window.Twitch.ext.onAuthorized(function (auth) {
       body: JSON.stringify({ action, user: twitchUserId }),
     })
       .then(async (res) => {
+        console.log("[DEBUG] Fetch response status:", res.status);
         const data = await res.json().catch(() => ({}));
+        console.log("[DEBUG] Fetch response data:", data);
+
         if (!data.success) {
-          // Reset cooldown if server rejects
-          lastActionTimes[action] = 0;
           showTempMessage(data.message || "Action failed", "red");
         }
       })
       .catch((err) => {
         console.error("[DEBUG] Network error during interact:", err);
-        lastActionTimes[action] = 0;
         showTempMessage("Network error", "red");
       });
   }
@@ -123,11 +103,20 @@ window.Twitch.ext.onAuthorized(function (auth) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
 
+    const sorted = [...entries].sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
+      if (b.mood !== a.mood) return b.mood - a.mood;
+      if (b.energy !== a.energy) return b.energy - a.energy;
+      return b.cleanliness - a.cleanliness;
+    });
+
+    const topTen = sorted.slice(0, 10);
     list.innerHTML = "";
-    entries.forEach((entry) => {
+
+    topTen.forEach((entry, index) => {
       const li = document.createElement("li");
       li.innerHTML = `
-        <strong>#${entry.rank}</strong> ${entry.user}
+        <strong>#${index + 1}</strong> ${entry.displayName || entry.userId}
         <span> - Points: ${entry.points} | Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
       `;
       list.appendChild(li);
@@ -165,6 +154,12 @@ window.Twitch.ext.onAuthorized(function (auth) {
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
+
+  document.getElementById("gellyColor")?.addEventListener("change", (e) => {
+    const color = e.target.value;
+    interact(`color:${color}`);
+  });
+
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 
   connectWebSocket();
