@@ -7,7 +7,6 @@ const GellySchema = new mongoose.Schema({
   energy: { type: Number, default: 100 }, // Raised caps handled in logic
   mood: { type: Number, default: 50 },
   cleanliness: { type: Number, default: 50 },
-=======
   loginName: String, // lowercase Twitch login for StreamElements
   energy: { type: Number, default: 50 },
   mood: { type: Number, default: 30 },
@@ -28,7 +27,6 @@ GellySchema.methods.applyDecay = function () {
   this.energy = Math.max(0, this.energy - decayRate * hoursSince);
   this.mood = Math.max(0, this.mood - decayRate * hoursSince);
   this.cleanliness = Math.max(0, this.cleanliness - decayRate * hoursSince);
-=======
   const decayRate = 5;
   const MAX_STAT = 500;
   const MIN_STAT = 0;
@@ -43,7 +41,6 @@ GellySchema.methods.applyDecay = function () {
 
 GellySchema.methods.checkGrowth = function () {
   // NEW: Higher thresholds so growth is slow & persistent
-=======
   if (this.stage === "egg" && this.energy >= 300) {
     this.stage = "blob";
   }
@@ -63,7 +60,6 @@ GellySchema.methods.updateStats = function (action) {
       return { success: false, message: `You must wait ${Math.ceil((cooldown - (now - lastTime)) / 1000)}s before doing that again.` };
     }
   }
-=======
 // Now only updates cooldown when explicitly successful
 GellySchema.methods.updateStats = function (action) {
   const MAX_STAT = 500;
@@ -78,7 +74,6 @@ GellySchema.methods.updateStats = function (action) {
       break;
     case "clean":
       this.cleanliness = Math.min(MAX_STAT, this.cleanliness + 20);
-=======
       success = true;
       break;
     case "play":
@@ -96,7 +91,6 @@ GellySchema.methods.updateStats = function (action) {
   this.lastActionTimes.set(action, new Date());
   this.checkGrowth();
   return { success: true };
-=======
   if (success) {
     this.lastActionTimes.set(action, new Date());
     this.checkGrowth();
