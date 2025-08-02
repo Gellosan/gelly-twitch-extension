@@ -1,3 +1,4 @@
+// ===== server.js =====
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -35,6 +36,7 @@ app.use(
 );
 app.options("*", cors());
 
+// ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
@@ -74,6 +76,7 @@ async function sendLeaderboard() {
   }
 }
 
+// ===== Helpers =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -85,8 +88,8 @@ async function fetchTwitchUserData(userId) {
     const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
       headers: {
         "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`
-      }
+        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`,
+      },
     });
     if (!res.ok) return null;
     const data = await res.json();
@@ -97,6 +100,7 @@ async function fetchTwitchUserData(userId) {
   }
 }
 
+// ===== StreamElements API =====
 const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
 const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
 const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
@@ -131,7 +135,7 @@ async function deductUserPoints(username, amount) {
   } catch {}
 }
 
-// ===== API ROUTES =====
+// ===== API Routes =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -166,6 +170,7 @@ app.post("/v1/interact", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
+    // Ensure Twitch loginName is set
     if (!gelly.displayName || !gelly.loginName) {
       const twitchData = await fetchTwitchUserData(user);
       if (twitchData) {
