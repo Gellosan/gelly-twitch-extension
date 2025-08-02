@@ -4,16 +4,16 @@ const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
 
-const DECAY_RATE = 2; // points/hour decay
-const DECAY_INTERVAL = 10 * 60 * 1000; // every 10 minutes
-const MAX_STAT = 300;
-const GLOBAL_COOLDOWN = 60 * 1000; // 60 seconds
-
+// ===== MongoDB Connection =====
 mongoose
-  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .connect(process.env.MONGODB_URI, {
+    useNewUrlParser: true,
+    useUnifiedTopology: true,
+  })
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ Mongo Error:", err));
 
+// ===== Gelly Model =====
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
@@ -23,11 +23,17 @@ const GellySchema = new mongoose.Schema({
   stage: { type: String, default: "egg" },
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
+  jellybeans: { type: Number, default: 5000 }, // starting currency
   lastUpdated: { type: Date, default: Date.now },
-  lastActionTime: { type: Date, default: new Date(0) }
+  lastActionTimes: {
+    feed: { type: Date, default: new Date(0) },
+    play: { type: Date, default: new Date(0) },
+    clean: { type: Date, default: new Date(0) }
+  }
 });
 const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
+// ===== Express Setup =====
 const app = express();
 app.use(express.json());
 
@@ -49,28 +55,41 @@ app.use(
     },
     methods: ["GET", "POST", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true
+    credentials: true,
   })
 );
 app.options("*", cors());
 
+// ===== WebSocket Setup =====
 const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
 wss.on("connection", (ws, req) => {
-  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const userId = searchParams.get("user");
-  if (userId) {
-    clients.set(userId, ws);
-    console.log(`🔌 WebSocket connected for user: ${userId}`);
-  }
-  ws.on("close", () => {
+  try {
+    const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+    const userId = searchParams.get("user");
+
     if (userId) {
-      clients.delete(userId);
-      console.log(`❌ WebSocket disconnected for user: ${userId}`);
+      clients.set(userId, ws);
+      console.log(`🔌 WebSocket connected for user: ${userId}`);
+    } else {
+      console.warn("⚠️ WebSocket connection without userId");
     }
-  });
+
+    ws.on("close", () => {
+      if (userId) {
+        clients.delete(userId);
+        console.log(`❌ WebSocket disconnected for user: ${userId}`);
+      }
+    });
+
+    ws.on("error", (err) => {
+      console.error(`🚨 WebSocket error for user: ${userId}`, err);
+    });
+  } catch (e) {
+    console.error("🚨 Error in WebSocket handler:", e);
+  }
 });
 
 function broadcastState(userId, gelly) {
@@ -85,75 +104,99 @@ async function sendLeaderboard() {
     .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
     .limit(10)
     .lean();
-  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+
+  const formatted = leaderboard.map((g, i) => ({
+    rank: i + 1,
+    user: g.displayName || g.userId,
+    mood: g.mood,
+    energy: g.energy,
+    cleanliness: g.cleanliness,
+    points: g.points
+  }));
+
+  const data = JSON.stringify({ type: "leaderboard", entries: formatted });
   for (const [, ws] of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
 
-function applyDecay(gelly) {
-  const now = Date.now();
-  const hoursElapsed = (now - gelly.lastUpdated.getTime()) / (1000 * 60 * 60);
-  const decayAmount = Math.floor(hoursElapsed * DECAY_RATE);
-
-  if (decayAmount > 0) {
-    gelly.energy = Math.max(0, gelly.energy - decayAmount);
-    gelly.mood = Math.max(0, gelly.mood - decayAmount);
-    gelly.cleanliness = Math.max(0, gelly.cleanliness - decayAmount);
-    gelly.lastUpdated = new Date();
-  }
-}
-
+// ===== Persistent Decay =====
 setInterval(async () => {
+  const now = Date.now();
+  const decayAmount = 1;
+
   const gellys = await Gelly.find();
-  for (let g of gellys) {
-    applyDecay(g);
-    await g.save();
-    broadcastState(g.userId, g);
+  for (let gelly of gellys) {
+    if (now - gelly.lastUpdated.getTime() > 3600000) { // hourly
+      gelly.energy = Math.max(0, gelly.energy - decayAmount);
+      gelly.mood = Math.max(0, gelly.mood - decayAmount);
+      gelly.cleanliness = Math.max(0, gelly.cleanliness - decayAmount);
+      gelly.lastUpdated = new Date();
+      await gelly.save();
+      broadcastState(gelly.userId, gelly);
+    }
   }
   sendLeaderboard();
-}, DECAY_INTERVAL);
+}, 300000); // check every 5 min
 
+// ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
+  console.log("📥 /v1/interact hit:", req.body);
+
   try {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
-    if (!gelly) gelly = new Gelly({ userId: user });
+    if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
-    applyDecay(gelly);
-
+    // Cooldown check
     const now = Date.now();
-    if (now - new Date(gelly.lastActionTime).getTime() < GLOBAL_COOLDOWN) {
-      return res.json({ success: false, message: "Please wait before interacting again." });
+    const lastActionTime = gelly.lastActionTimes[action] || new Date(0);
+    const cooldown = 60000; // 60s
+    if (now - new Date(lastActionTime).getTime() < cooldown) {
+      return res.json({ success: false, message: `Please wait before doing that again.` });
     }
 
     let pointsAwarded = 0;
-    switch (action) {
-      case "feed":
-        gelly.energy = Math.min(MAX_STAT, gelly.energy + 10);
-        pointsAwarded = 5;
-        break;
-      case "play":
-        gelly.mood = Math.min(MAX_STAT, gelly.mood + 10);
-        pointsAwarded = 5;
-        break;
-      case "clean":
-        gelly.cleanliness = Math.min(MAX_STAT, gelly.cleanliness + 10);
-        pointsAwarded = 5;
-        break;
-      default:
-        return res.json({ success: false, message: "Unknown action" });
+
+    if (action.startsWith("color:")) {
+      const color = action.split(":")[1];
+      if (["blue", "green", "pink"].includes(color)) gelly.color = color;
+      pointsAwarded = 1;
+    } else {
+      switch (action) {
+        case "feed":
+          if (gelly.jellybeans < 1000) {
+            return res.json({ success: false, message: "Not enough Jellybeans!" });
+          }
+          gelly.jellybeans -= 1000;
+          gelly.energy = Math.min(200, gelly.energy + 10);
+          pointsAwarded = 5;
+          break;
+        case "play":
+          gelly.mood = Math.min(200, gelly.mood + 10);
+          pointsAwarded = 5;
+          break;
+        case "clean":
+          gelly.cleanliness = Math.min(200, gelly.cleanliness + 10);
+          pointsAwarded = 5;
+          break;
+        default:
+          return res.json({ success: false, message: "Unknown action" });
+      }
     }
 
+    // Save cooldown
+    gelly.lastActionTimes[action] = new Date();
+
+    // Add points
     gelly.points += pointsAwarded;
 
-    if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
-    if (gelly.stage === "blob" && gelly.mood >= 250 && gelly.cleanliness >= 250) gelly.stage = "gelly";
+    // Stage progression
+    if (gelly.stage === "egg" && gelly.energy >= 100) gelly.stage = "blob";
+    if (gelly.stage === "blob" && gelly.mood >= 100 && gelly.cleanliness >= 100) gelly.stage = "gelly";
 
-    gelly.lastActionTime = new Date();
-    gelly.lastUpdated = new Date();
     await gelly.save();
 
     broadcastState(user, gelly);
@@ -167,5 +210,6 @@ app.post("/v1/interact", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
