@@ -1,136 +1,164 @@
-/* ===== Base Layout ===== */
+/* ========================
+   GENERAL STYLES
+======================== */
 body {
-  margin: 0;
   font-family: Arial, sans-serif;
-  background-color: #121212;
-  color: white;
-  text-align: center;
+  background-color: #1e1e1e;
+  color: #fff;
+  margin: 0;
+  padding: 0;
 }
 
-/* ===== Gelly Image ===== */
 #gelly-container {
-  margin-top: 20px;
+  max-width: 400px;
+  margin: auto;
+  text-align: center;
+  padding: 10px;
+  position: relative;
+  z-index: 1;
 }
 
-#gelly-image {
-  width: 150px;
-  transition: transform 0.3s ease;
+/* ========================
+   BACKGROUND IMAGE
+======================== */
+#background {
+  position: relative;
+  width: 100%;
+  max-width: 400px;
+  margin: 0 auto;
+  background-image: url("assets/background.png"); /* change path if needed */
+  background-size: cover;
+  background-position: center;
+  border-radius: 8px;
+  overflow: hidden;
+  padding: 20px 0; /* space for gelly */
 }
 
-#gelly-image.pop {
-  transform: scale(1.15);
+#background img#gelly-image {
+  position: relative;
+  z-index: 2;
 }
 
-/* ===== Stats Section ===== */
+/* ========================
+   STATS SECTION
+======================== */
 #stats {
-  margin-top: 15px;
-  font-size: 16px;
+  margin-top: 10px;
 }
 
 #stats p {
   margin: 5px 0;
+  font-size: 16px;
 }
 
-/* ===== Buttons ===== */
+/* ========================
+   BUTTONS
+======================== */
 #actions {
-  margin-top: 20px;
+  margin-top: 10px;
 }
 
 #actions button {
-  background-color: #5c6bc0;
-  color: white;
+  background-color: #333;
+  color: #fff;
   border: none;
-  padding: 8px 15px;
+  padding: 8px 12px;
   margin: 4px;
-  border-radius: 6px;
+  border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
-  transition: background-color 0.2s;
+  transition: background-color 0.3s;
 }
 
 #actions button:hover {
-  background-color: #3f51b5;
+  background-color: #555;
 }
 
-/* ===== Leaderboard ===== */
+/* ========================
+   COLOR PICKER
+======================== */
+#color-picker {
+  margin-top: 10px;
+}
+
+#color-picker label {
+  margin-right: 5px;
+}
+
+/* ========================
+   LEADERBOARD
+======================== */
+#leaderboard {
+  margin-top: 15px;
+}
+
+#leaderboard h3 {
+  margin-bottom: 8px;
+}
+
 #leaderboard-list {
   list-style: none;
   padding: 0;
-  margin: 10px 0;
-  font-size: 14px;
 }
 
 #leaderboard-list li {
-  padding: 3px 0;
+  background: rgba(255, 255, 255, 0.05);
+  margin: 3px 0;
+  padding: 6px;
+  border-radius: 4px;
+  font-size: 14px;
 }
 
-/* ===== Feedback Message ===== */
-#feedback-message {
-  position: fixed;
-  top: 15%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: rgba(0, 0, 0, 0.85);
-  color: white;
-  padding: 12px 20px;
-  border-radius: 10px;
-  font-size: 16px;
-  opacity: 0;
-  pointer-events: none;
-  animation: fadeInOut 2.5s ease forwards;
-  z-index: 1000;
+/* ========================
+   HELP BOX
+======================== */
+#help-box {
+  margin-top: 10px;
+  padding: 8px;
+  background-color: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
 }
 
-/* ===== Feedback Animation ===== */
-@keyframes fadeInOut {
-  0% {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-10px);
-  }
-  15% {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-  85% {
-    opacity: 1;
-    transform: translateX(-50%) translateY(0);
-  }
-  100% {
-    opacity: 0;
-    transform: translateX(-50%) translateY(-10px);
-  }
-}
-/* Feedback fade */
+/* ========================
+   MESSAGE / FEEDBACK
+======================== */
 #message {
-  transition: opacity 0.5s ease;
+  margin-top: 10px;
+  font-weight: bold;
+  transition: opacity 0.3s ease-in-out;
 }
 
-/* Gelly Animations */
+/* ========================
+   GELLY ANIMATIONS
+======================== */
 .gelly-feed-anim {
-  animation: gellyBounce 0.8s ease;
+  animation: gellyFeed 0.8s ease;
 }
+
 .gelly-play-anim {
-  animation: gellyShake 0.8s ease;
+  animation: gellyPlay 0.8s ease;
 }
+
 .gelly-clean-anim {
-  animation: gellySpin 0.8s ease;
+  animation: gellyClean 0.8s ease;
 }
 
-@keyframes gellyBounce {
-  0%, 100% { transform: translateY(0); }
-  30% { transform: translateY(-10px); }
-  60% { transform: translateY(5px); }
+@keyframes gellyFeed {
+  0% { transform: scale(1); }
+  50% { transform: scale(1.1); }
+  100% { transform: scale(1); }
 }
 
-@keyframes gellyShake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-5px); }
-  50% { transform: translateX(5px); }
-  75% { transform: translateX(-5px); }
+@keyframes gellyPlay {
+  0% { transform: rotate(0); }
+  25% { transform: rotate(5deg); }
+  50% { transform: rotate(-5deg); }
+  75% { transform: rotate(5deg); }
+  100% { transform: rotate(0); }
 }
 
-@keyframes gellySpin {
-  0% { transform: rotate(0deg); }
-  50% { transform: rotate(20deg); }
-  100% { transform: rotate(0deg); }
+@keyframes gellyClean {
+  0% { filter: brightness(1); }
+  50% { filter: brightness(1.3); }
+  100% { filter: brightness(1); }
 }
