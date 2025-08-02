@@ -85,7 +85,10 @@ const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
 async function fetchTwitchUserData(userId) {
   try {
-    const res = await fetch(`https://api.twitch.tv/helix/users?id=${userId}`, {
+    // Strip "U" prefix if present
+    const cleanId = userId.startsWith("U") ? userId.substring(1) : userId;
+
+    const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
       headers: {
         "Client-ID": TWITCH_CLIENT_ID,
         "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`
@@ -161,6 +164,9 @@ app.post("/v1/interact", async (req, res) => {
   try {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
+
+    // Always strip "U" prefix for Twitch lookups
+    const cleanUserId = user.startsWith("U") ? user.substring(1) : user;
 
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
