@@ -108,30 +108,22 @@ const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 
 async function getUserPoints(username) {
   try {
-    const cleanUsername = (username || "").toLowerCase();
-    console.log(`[DEBUG] Calling SE API for username: "${cleanUsername}"`);
     const res = await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(cleanUsername)}`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
     );
-    if (!res.ok) {
-      console.log(`[DEBUG] SE API responded with status: ${res.status}`);
-      return 0;
-    }
+    if (!res.ok) return 0;
     const data = await res.json();
-    console.log(`[DEBUG] SE API returned data:`, data);
     return data?.points || 0;
-  } catch (err) {
-    console.error(`[DEBUG] SE API call failed:`, err);
+  } catch {
     return 0;
   }
 }
 
 async function deductUserPoints(username, amount) {
   try {
-    const cleanUsername = (username || "").toLowerCase();
     await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(cleanUsername)}`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       {
         method: "PUT",
         headers: {
@@ -141,22 +133,8 @@ async function deductUserPoints(username, amount) {
         body: JSON.stringify({ points: -Math.abs(amount) }),
       }
     );
-  } catch (err) {
-    console.error(`[DEBUG] Failed to deduct points from SE:`, err);
-  }
+  } catch {}
 }
-
-// ✅ NEW: Public endpoint for Jellybean balance
-app.get("/v1/points/:username", async (req, res) => {
-  try {
-    const username = req.params.username;
-    const points = await getUserPoints(username);
-    res.json({ success: true, points });
-  } catch (err) {
-    console.error(err);
-    res.json({ success: false, points: 0 });
-  }
-});
 
 app.get("/v1/state/:userId", async (req, res) => {
   try {
@@ -202,36 +180,25 @@ app.post("/v1/interact", async (req, res) => {
       }
     }
 
-    const usernameForPoints = (gelly.loginName || "").toLowerCase();
-    console.log(`[DEBUG] Processing action "${action}" for SE username: "${usernameForPoints}"`);
-
-    const userPoints = await getUserPoints(usernameForPoints);
-    console.log(`[DEBUG] User has ${userPoints} Jellybeans in SE`);
-
-    const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
-    const cooldownKey = action.startsWith("color:") ? "color" : action;
-    const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
-    const now = new Date();
-
-    if (gelly.lastActionTimes[cooldownKey] && now - gelly.lastActionTimes[cooldownKey] < cooldown) {
-      const remaining = Math.ceil((cooldown - (now - gelly.lastActionTimes[cooldownKey])) / 1000);
-      return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
-    }
+    const usernameForPoints = gelly.loginName;
 
     let pointsAwarded = 0;
     let actionSucceeded = false;
 
     if (action.startsWith("color:")) {
-      const color = action.split(":")[1];
-      if (userPoints < 10000) return res.json({ success: false, message: "Not enough Jellybeans for color change." });
+      if (await getUserPoints(usernameForPoints) < 10000) {
+        return res.json({ success: false, message: "Not enough Jellybeans for color change." });
+      }
       await deductUserPoints(usernameForPoints, 10000);
-      gelly.color = color;
+      gelly.color = action.split(":")[1];
       pointsAwarded = 1;
       actionSucceeded = true;
     } else {
       switch (action) {
         case "feed":
-          if (userPoints < 1000) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+          if (await getUserPoints(usernameForPoints) < 1000) {
+            return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+          }
           await deductUserPoints(usernameForPoints, 1000);
           gelly.energy = Math.min(500, gelly.energy + 20);
           pointsAwarded = 5;
@@ -253,17 +220,19 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     if (actionSucceeded) {
-      if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
-      if (gelly.stage === "blob" && gelly.mood >= 400 && gelly.cleanliness >= 400) gelly.stage = "gelly";
       gelly.points += pointsAwarded;
-      gelly.lastUpdated = now;
-      gelly.lastActionTimes[cooldownKey] = now;
+      gelly.lastUpdated = new Date();
       await gelly.save();
+
+      const updatedBalance = await getUserPoints(usernameForPoints);
+
       broadcastState(user, gelly);
       sendLeaderboard();
+
+      return res.json({ success: true, newBalance: updatedBalance });
     }
 
-    res.json({ success: true });
+    res.json({ success: false, message: "Action failed" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ success: false, message: "Server error" });
