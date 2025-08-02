@@ -11,6 +11,61 @@ window.Twitch.ext.onAuthorized(function (auth) {
   }
 
   const SERVER_URL = "https://gelly-server.onrender.com";
+<<<<<<< HEAD
+=======
+  let lastStage = null;
+
+  const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
+  const lastActionTimes = { feed: 0, play: 0, clean: 0, color: 0 };
+
+  function canUseAction(action) {
+    const now = Date.now();
+    const cooldown = ACTION_COOLDOWNS[action] || 60000;
+    if (now - lastActionTimes[action] < cooldown) {
+      const remaining = Math.ceil((cooldown - (now - lastActionTimes[action])) / 1000);
+      showTempMessage(`Please wait ${remaining}s before ${action} again.`, "yellow");
+      return false;
+    }
+    lastActionTimes[action] = now;
+    return true;
+  }
+
+  function showTempMessage(msg, color = "#fff", duration = 2500) {
+    const el = document.getElementById("message");
+    if (!el) return;
+    el.innerText = msg;
+    el.style.color = color;
+    el.style.opacity = "1";
+    setTimeout(() => { el.style.opacity = "0"; }, duration);
+  }
+
+  function animateGelly(action) {
+    const gellyImage = document.getElementById("gelly-image");
+    if (!gellyImage) return;
+    gellyImage.classList.add(`gelly-${action}-anim`);
+    setTimeout(() => {
+      gellyImage.classList.remove(`gelly-${action}-anim`);
+    }, 800);
+  }
+
+  function showEvolutionMessage(newStage) {
+    let stageName = "";
+    if (newStage === "blob") stageName = "Blob!";
+    else if (newStage === "gelly") stageName = "Adult Gelly!";
+
+    if (stageName) {
+      showTempMessage(`🎉 Your Gelly evolved into ${stageName}`, "#0ff", 4000);
+      const gellyImage = document.getElementById("gelly-image");
+      const background = document.getElementById("background");
+
+      gellyImage.classList.add("gelly-evolve-bounce");
+      setTimeout(() => gellyImage.classList.remove("gelly-evolve-bounce"), 1200);
+
+      background.classList.add("evolution-active");
+      setTimeout(() => background.classList.remove("evolution-active"), 2500);
+    }
+  }
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
 
   // ========================
   // COOLDOWN SETTINGS
@@ -54,25 +109,23 @@ window.Twitch.ext.onAuthorized(function (auth) {
   // WEBSOCKET
   // ========================
   function connectWebSocket() {
-    if (!twitchUserId) {
-      console.warn("[DEBUG] No Twitch user ID, skipping WebSocket connection.");
-      return;
-    }
+    if (!twitchUserId) return;
     const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
-    console.log("[DEBUG] Connecting WebSocket:", wsUrl);
-
     const socket = new WebSocket(wsUrl);
+<<<<<<< HEAD
     socket.addEventListener("open", () => console.log("[DEBUG] WebSocket connected"));
     socket.addEventListener("error", (err) => console.error("[DEBUG] WebSocket error", err));
 
+=======
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
     socket.addEventListener("message", (event) => {
-      console.log("[DEBUG] WebSocket message received:", event.data);
       const msg = JSON.parse(event.data);
       if (msg.type === "update") updateUI(msg.state);
       else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
 
+<<<<<<< HEAD
   // ========================
   // ACTION HANDLER
   // ========================
@@ -93,6 +146,34 @@ window.Twitch.ext.onAuthorized(function (auth) {
     animateGelly(action.includes("color:") ? "color" : action);
     showTempMessage(actionMessage, "#0f0");
 
+=======
+  function fetchJellybeanBalance(username) {
+    fetch(`${SERVER_URL}/v1/points/${username}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          document.getElementById("jellybeanBalance").innerText = data.points.toLocaleString();
+        } else {
+          document.getElementById("jellybeanBalance").innerText = "0";
+        }
+      })
+      .catch(() => {
+        document.getElementById("jellybeanBalance").innerText = "0";
+      });
+  }
+
+  function interact(action) {
+    if (!twitchUserId) return showTempMessage("User not authenticated.", "red");
+    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    if (!canUseAction(cooldownKey)) return;
+
+    animateGelly(action.includes("color:") ? "color" : action);
+    showTempMessage(
+      action === "play" ? "You play with your Gelly!" : `You ${action} your Gelly!`,
+      "#0f0"
+    );
+
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
     fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -102,6 +183,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
         username: twitchDisplayName // Send display name for StreamElements
       }),
     })
+<<<<<<< HEAD
       .then(async (res) => {
         console.log("[DEBUG] Fetch response status:", res.status);
         const data = await res.json().catch(() => ({}));
@@ -114,6 +196,17 @@ window.Twitch.ext.onAuthorized(function (auth) {
         console.error("[DEBUG] Network error during interact:", err);
         showTempMessage("Network error", "red");
       });
+=======
+      .then(res => res.json())
+      .then(data => {
+        if (!data.success) {
+          showTempMessage(data.message || "Action failed", "red");
+        } else {
+          fetchJellybeanBalance("gellosan"); // refresh balance on success
+        }
+      })
+      .catch(() => showTempMessage("Network error", "red"));
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   }
 
   // ========================
@@ -122,6 +215,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
   function updateLeaderboard(entries) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
+<<<<<<< HEAD
 
     const sorted = [...entries].sort((a, b) => {
       if (b.points !== a.points) return b.points - a.points;
@@ -141,17 +235,31 @@ window.Twitch.ext.onAuthorized(function (auth) {
       `;
       list.appendChild(li);
     });
+=======
+    const sorted = [...entries].sort((a, b) =>
+      b.points - a.points || b.mood - a.mood || b.energy - a.energy || b.cleanliness - a.cleanliness
+    );
+    list.innerHTML = sorted.slice(0, 10).map((entry, i) =>
+      `<li><strong>#${i + 1}</strong> ${entry.displayName || entry.userId}
+      <span> - Points: ${entry.points} | Mood: ${Math.round(entry.mood)} | Energy: ${Math.round(entry.energy)} | Cleanliness: ${Math.round(entry.cleanliness)}</span></li>`
+    ).join("");
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   }
 
   function updateUI(state) {
-    console.log("[DEBUG] Updating UI with state:", state);
-    document.getElementById("energy").innerText = state.energy;
-    document.getElementById("mood").innerText = state.mood;
-    document.getElementById("cleanliness").innerText = state.cleanliness;
+    if (lastStage && state.stage !== lastStage) {
+      showEvolutionMessage(state.stage);
+    }
+    lastStage = state.stage;
+
+    document.getElementById("energy").innerText = Math.round(state.energy);
+    document.getElementById("mood").innerText = Math.round(state.mood);
+    document.getElementById("cleanliness").innerText = Math.round(state.cleanliness);
 
     const gellyImage = document.getElementById("gelly-image");
     const stage = state.stage || "egg";
     const color = state.color || "blue";
+<<<<<<< HEAD
 
     if (stage === "egg") {
       gellyImage.src = "assets/egg.png";
@@ -163,14 +271,19 @@ window.Twitch.ext.onAuthorized(function (auth) {
 
     gellyImage.style.maxWidth = "100%";
     gellyImage.style.height = "auto";
+=======
+    if (stage === "egg") gellyImage.src = "assets/egg.png";
+    else if (stage === "blob") gellyImage.src = `assets/blob-${color}.png`;
+    else if (stage === "gelly") gellyImage.src = `assets/gelly-${color}.png`;
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   }
 
   function showHelp() {
-    console.log("[DEBUG] Toggling help box");
     const box = document.getElementById("help-box");
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
 
+<<<<<<< HEAD
   // ========================
   // FETCH DISPLAY NAME
   // ========================
@@ -195,14 +308,37 @@ window.Twitch.ext.onAuthorized(function (auth) {
   // ========================
   // BUTTON LISTENERS
   // ========================
+=======
+  document.getElementById("startGameBtn")?.addEventListener("click", () => {
+    if (!twitchUserId) return showTempMessage("User not authenticated.", "red");
+    fetch(`${SERVER_URL}/v1/state/${twitchUserId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          lastStage = data.state.stage;
+          updateUI(data.state);
+          document.getElementById("landing-page").style.display = "none";
+          document.getElementById("gelly-container").style.display = "block";
+          connectWebSocket();
+          fetchJellybeanBalance("gellosan"); // load balance on game start
+        } else {
+          showTempMessage("Failed to load Gelly.", "red");
+        }
+      });
+  });
+
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
   document.getElementById("gellyColor")?.addEventListener("change", (e) => {
+<<<<<<< HEAD
     const color = e.target.value;
     interact(`color:${color}`);
+=======
+    interact(`color:${e.target.value}`);
+>>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   });
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
-
-  connectWebSocket();
 });
+
