@@ -42,7 +42,6 @@ async function fetchJellybeanBalance() {
     const data = await res.json();
     jellybeanBalance = data.points || 0;
     jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
-    console.debug("[DEBUG] Updated Jellybean balance:", jellybeanBalance);
   } catch (err) {
     console.error("[ERROR] Failed to fetch jellybean balance:", err);
   }
@@ -80,11 +79,17 @@ async function interact(action) {
       showTempMessage(data.message || "Action failed");
     } else {
       animateGelly();
-      fetchJellybeanBalance(); // instant update
+      fetchJellybeanBalance();
     }
   } catch (err) {
     console.error("[ERROR] interact() failed:", err);
   }
+}
+
+// ===== Start Game =====
+function startGame() {
+  document.getElementById("game-screen").style.display = "block";
+  document.getElementById("start-screen").style.display = "none";
 }
 
 // ===== WebSocket =====
@@ -92,7 +97,6 @@ let ws;
 function connectWebSocket() {
   if (!twitchUserId) return;
   ws = new WebSocket(`wss://gelly-server.onrender.com?user=${twitchUserId}`);
-
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
     if (msg.type === "update") {
@@ -105,10 +109,7 @@ function connectWebSocket() {
 
 // ===== Twitch Auth =====
 Twitch.ext.onAuthorized(async function(auth) {
-  console.debug("[DEBUG] onAuthorized fired. twitchUserId:", auth.userId);
   twitchUserId = auth.userId;
-
-  // Fetch Gelly state
   try {
     const res = await fetch(`https://gelly-server.onrender.com/v1/state/${twitchUserId}`);
     if (res.ok) {
@@ -122,7 +123,6 @@ Twitch.ext.onAuthorized(async function(auth) {
   } catch (err) {
     console.error("[ERROR] Fetching state failed:", err);
   }
-
   connectWebSocket();
 });
 
@@ -130,3 +130,4 @@ Twitch.ext.onAuthorized(async function(auth) {
 document.getElementById("feedBtn").addEventListener("click", () => interact("feed"));
 document.getElementById("playBtn").addEventListener("click", () => interact("play"));
 document.getElementById("cleanBtn").addEventListener("click", () => interact("clean"));
+document.getElementById("startGameBtn").addEventListener("click", startGame);
