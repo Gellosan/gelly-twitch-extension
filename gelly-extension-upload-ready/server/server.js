@@ -1,4 +1,3 @@
-// server.js
 const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
@@ -85,9 +84,7 @@ const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
 async function fetchTwitchUserData(userId) {
   try {
-    // Strip "U" prefix if present
     const cleanId = userId.startsWith("U") ? userId.substring(1) : userId;
-
     const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
       headers: {
         "Client-ID": TWITCH_CLIENT_ID,
@@ -139,6 +136,20 @@ async function deductUserPoints(username, amount) {
   } catch {}
 }
 
+// ✅ NEW: Endpoint for Jellybean balance
+app.get("/v1/points/:username", async (req, res) => {
+  try {
+    const username = req.params.username;
+    console.log(`[DEBUG] Fetching Jellybeans for: ${username}`);
+    const points = await getUserPoints(username);
+    console.log(`[DEBUG] Points for ${username}: ${points}`);
+    res.json({ success: true, points });
+  } catch (err) {
+    console.error(err);
+    res.json({ success: false, points: 0 });
+  }
+});
+
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
@@ -165,9 +176,7 @@ app.post("/v1/interact", async (req, res) => {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
-    // Always strip "U" prefix for Twitch lookups
     const cleanUserId = user.startsWith("U") ? user.substring(1) : user;
-
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
@@ -188,13 +197,11 @@ app.post("/v1/interact", async (req, res) => {
 
     const usernameForPoints = gelly.loginName;
 
-    const ACTION_COOLDOWNS = {
-      feed: 300000,
-      clean: 240000,
-      play: 180000,
-      color: 60000
-    };
+    console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
+    const userPoints = await getUserPoints(usernameForPoints);
+    console.log(`[DEBUG] SE returned points: ${userPoints}`);
 
+    const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
     const now = new Date();
@@ -209,9 +216,7 @@ app.post("/v1/interact", async (req, res) => {
 
     if (action.startsWith("color:")) {
       const color = action.split(":")[1];
-      if (await getUserPoints(usernameForPoints) < 10000) {
-        return res.json({ success: false, message: "Not enough Jellybeans for color change." });
-      }
+      if (userPoints < 10000) return res.json({ success: false, message: "Not enough Jellybeans for color change." });
       await deductUserPoints(usernameForPoints, 10000);
       gelly.color = color;
       pointsAwarded = 1;
@@ -219,9 +224,7 @@ app.post("/v1/interact", async (req, res) => {
     } else {
       switch (action) {
         case "feed":
-          if (await getUserPoints(usernameForPoints) < 1000) {
-            return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-          }
+          if (userPoints < 1000) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
           await deductUserPoints(usernameForPoints, 1000);
           gelly.energy = Math.min(500, gelly.energy + 20);
           pointsAwarded = 5;
@@ -245,12 +248,10 @@ app.post("/v1/interact", async (req, res) => {
     if (actionSucceeded) {
       if (gelly.stage === "egg" && gelly.energy >= 200) gelly.stage = "blob";
       if (gelly.stage === "blob" && gelly.mood >= 400 && gelly.cleanliness >= 400) gelly.stage = "gelly";
-
       gelly.points += pointsAwarded;
       gelly.lastUpdated = now;
       gelly.lastActionTimes[cooldownKey] = now;
       await gelly.save();
-
       broadcastState(user, gelly);
       sendLeaderboard();
     }
