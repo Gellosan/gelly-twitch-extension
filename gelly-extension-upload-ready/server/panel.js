@@ -1,13 +1,58 @@
+// panel.js
 window.Twitch.ext.onAuthorized(function (auth) {
   const twitchUserId = auth.userId;
+  const twitchToken = auth.token;
+  const twitchDisplayName = auth.channelId || ""; // Will be replaced with fetched display name
+
   console.log("[DEBUG] onAuthorized fired. twitchUserId:", twitchUserId);
 
   if (!twitchUserId) {
     console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
   }
 
-  const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
+  const SERVER_URL = "https://gelly-server.onrender.com";
 
+  // ========================
+  // COOLDOWN SETTINGS
+  // ========================
+  const COOLDOWN_MS = 60000; // 60 seconds per action
+  const lastActionTimes = { feed: 0, play: 0, clean: 0, color: 0 };
+
+  function canUseAction(action) {
+    const now = Date.now();
+    if (now - lastActionTimes[action] < COOLDOWN_MS) {
+      const remaining = Math.ceil((COOLDOWN_MS - (now - lastActionTimes[action])) / 1000);
+      showTempMessage(`Please wait ${remaining}s before ${action} again.`, "yellow");
+      return false;
+    }
+    lastActionTimes[action] = now;
+    return true;
+  }
+
+  // ========================
+  // FEEDBACK & ANIMATION
+  // ========================
+  function showTempMessage(msg, color = "#fff") {
+    const el = document.getElementById("message");
+    if (!el) return;
+    el.innerText = msg;
+    el.style.color = color;
+    el.style.opacity = "1";
+    setTimeout(() => { el.style.opacity = "0"; }, 2500);
+  }
+
+  function animateGelly(action) {
+    const gellyImage = document.getElementById("gelly-image");
+    if (!gellyImage) return;
+    gellyImage.classList.add(`gelly-${action}-anim`);
+    setTimeout(() => {
+      gellyImage.classList.remove(`gelly-${action}-anim`);
+    }, 800);
+  }
+
+  // ========================
+  // WEBSOCKET
+  // ========================
   function connectWebSocket() {
     if (!twitchUserId) {
       console.warn("[DEBUG] No Twitch user ID, skipping WebSocket connection.");
@@ -17,7 +62,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
     console.log("[DEBUG] Connecting WebSocket:", wsUrl);
 
     const socket = new WebSocket(wsUrl);
-
     socket.addEventListener("open", () => console.log("[DEBUG] WebSocket connected"));
     socket.addEventListener("error", (err) => console.error("[DEBUG] WebSocket error", err));
 
@@ -29,40 +73,58 @@ window.Twitch.ext.onAuthorized(function (auth) {
     });
   }
 
+  // ========================
+  // ACTION HANDLER
+  // ========================
   function interact(action) {
     if (!twitchUserId) {
       console.warn("[DEBUG] Attempted to interact without a Twitch user ID");
-      return showMessage("User not authenticated.");
+      return showTempMessage("User not authenticated.", "red");
     }
 
+    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    if (!canUseAction(cooldownKey)) return;
+
     console.log(`[DEBUG] Sending action to server: ${action}`);
+
+    const actionMessage =
+      action === "play" ? "You play with your Gelly!" : `You ${action} your Gelly!`;
+
+    animateGelly(action.includes("color:") ? "color" : action);
+    showTempMessage(actionMessage, "#0f0");
+
     fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, user: twitchUserId }),
+      body: JSON.stringify({
+        action,
+        user: twitchUserId,
+        username: twitchDisplayName // Send display name for StreamElements
+      }),
     })
       .then(async (res) => {
         console.log("[DEBUG] Fetch response status:", res.status);
         const data = await res.json().catch(() => ({}));
         console.log("[DEBUG] Fetch response data:", data);
-
         if (!data.success) {
-          showMessage(data.message || "Action failed");
-        } else {
-          console.log("[DEBUG] Action succeeded:", action);
+          showTempMessage(data.message || "Action failed", "red");
         }
       })
       .catch((err) => {
         console.error("[DEBUG] Network error during interact:", err);
-        showMessage("Network error");
+        showTempMessage("Network error", "red");
       });
   }
 
+  // ========================
+  // UI UPDATES
+  // ========================
   function updateLeaderboard(entries) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
 
     const sorted = [...entries].sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
       if (b.mood !== a.mood) return b.mood - a.mood;
       if (b.energy !== a.energy) return b.energy - a.energy;
       return b.cleanliness - a.cleanliness;
@@ -74,8 +136,8 @@ window.Twitch.ext.onAuthorized(function (auth) {
     topTen.forEach((entry, index) => {
       const li = document.createElement("li");
       li.innerHTML = `
-        <strong>#${index + 1}</strong> ${entry.user}
-        <span> - Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
+        <strong>#${index + 1}</strong> ${entry.displayName || entry.userId}
+        <span> - Points: ${entry.points} | Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
       `;
       list.appendChild(li);
     });
@@ -98,13 +160,9 @@ window.Twitch.ext.onAuthorized(function (auth) {
     } else if (stage === "gelly") {
       gellyImage.src = `assets/gelly-${color}.png`;
     }
-  }
 
-  function showMessage(msg) {
-    console.log("[DEBUG] showMessage:", msg);
-    const el = document.getElementById("message");
-    el.innerText = msg;
-    setTimeout(() => (el.innerText = ""), 3000);
+    gellyImage.style.maxWidth = "100%";
+    gellyImage.style.height = "auto";
   }
 
   function showHelp() {
@@ -113,10 +171,37 @@ window.Twitch.ext.onAuthorized(function (auth) {
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
 
-  // Attach button listeners
+  // ========================
+  // FETCH DISPLAY NAME
+  // ========================
+  Twitch.ext.onAuthorized(async function (auth) {
+    try {
+      const response = await fetch(`https://api.twitch.tv/helix/users?id=${auth.userId}`, {
+        headers: {
+          "Client-ID": "<YOUR_CLIENT_ID>",
+          "Authorization": `Bearer ${auth.token}`
+        }
+      });
+      const json = await response.json();
+      if (json.data && json.data.length > 0) {
+        twitchDisplayName = json.data[0].display_name;
+        console.log("[DEBUG] Twitch display name set:", twitchDisplayName);
+      }
+    } catch (err) {
+      console.error("[DEBUG] Failed to fetch display name:", err);
+    }
+  });
+
+  // ========================
+  // BUTTON LISTENERS
+  // ========================
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
+  document.getElementById("gellyColor")?.addEventListener("change", (e) => {
+    const color = e.target.value;
+    interact(`color:${color}`);
+  });
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 
   connectWebSocket();
