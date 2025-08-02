@@ -108,22 +108,30 @@ const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 
 async function getUserPoints(username) {
   try {
+    const cleanUsername = (username || "").toLowerCase();
+    console.log(`[DEBUG] Calling SE API for username: "${cleanUsername}"`);
     const res = await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(cleanUsername)}`,
       { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
     );
-    if (!res.ok) return 0;
+    if (!res.ok) {
+      console.log(`[DEBUG] SE API responded with status: ${res.status}`);
+      return 0;
+    }
     const data = await res.json();
+    console.log(`[DEBUG] SE API returned data:`, data);
     return data?.points || 0;
-  } catch {
+  } catch (err) {
+    console.error(`[DEBUG] SE API call failed:`, err);
     return 0;
   }
 }
 
 async function deductUserPoints(username, amount) {
   try {
+    const cleanUsername = (username || "").toLowerCase();
     await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(cleanUsername)}`,
       {
         method: "PUT",
         headers: {
@@ -133,16 +141,16 @@ async function deductUserPoints(username, amount) {
         body: JSON.stringify({ points: -Math.abs(amount) }),
       }
     );
-  } catch {}
+  } catch (err) {
+    console.error(`[DEBUG] Failed to deduct points from SE:`, err);
+  }
 }
 
-// ✅ NEW: Endpoint for Jellybean balance
+// ✅ NEW: Public endpoint for Jellybean balance
 app.get("/v1/points/:username", async (req, res) => {
   try {
     const username = req.params.username;
-    console.log(`[DEBUG] Fetching Jellybeans for: ${username}`);
     const points = await getUserPoints(username);
-    console.log(`[DEBUG] Points for ${username}: ${points}`);
     res.json({ success: true, points });
   } catch (err) {
     console.error(err);
@@ -176,7 +184,6 @@ app.post("/v1/interact", async (req, res) => {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
-    const cleanUserId = user.startsWith("U") ? user.substring(1) : user;
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
@@ -195,11 +202,11 @@ app.post("/v1/interact", async (req, res) => {
       }
     }
 
-    const usernameForPoints = gelly.loginName;
+    const usernameForPoints = (gelly.loginName || "").toLowerCase();
+    console.log(`[DEBUG] Processing action "${action}" for SE username: "${usernameForPoints}"`);
 
-    console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
     const userPoints = await getUserPoints(usernameForPoints);
-    console.log(`[DEBUG] SE returned points: ${userPoints}`);
+    console.log(`[DEBUG] User has ${userPoints} Jellybeans in SE`);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -265,4 +272,3 @@ app.post("/v1/interact", async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
