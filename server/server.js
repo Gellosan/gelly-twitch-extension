@@ -184,14 +184,16 @@ app.post("/v1/interact", async (req, res) => {
     let actionSucceeded = false;
 
     switch (action) {
-      case "feed":
-        if (await getUserPoints(usernameForPoints) < 1000) {
+      case "feed": {
+        const currentPoints = await getUserPoints(usernameForPoints);
+        if (currentPoints < 1000) {
           return res.json({ success: false, message: "Not enough Jellybeans to feed." });
         }
         await deductUserPoints(usernameForPoints, 1000);
         gelly.energy = Math.min(500, gelly.energy + 20);
         actionSucceeded = true;
         break;
+      }
       case "play":
         gelly.mood = Math.min(500, gelly.mood + 20);
         actionSucceeded = true;
@@ -214,21 +216,18 @@ app.post("/v1/interact", async (req, res) => {
 
     if (actionSucceeded) {
       await gelly.save();
-
       const updatedBalance = await getUserPoints(usernameForPoints);
-
       broadcastState(user, gelly);
       sendLeaderboard();
-
       return res.json({ success: true, newBalance: updatedBalance });
     }
 
     res.json({ success: false, message: "Action failed" });
-  } catch {
+  } catch (err) {
+    console.error("[ERROR] /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-
