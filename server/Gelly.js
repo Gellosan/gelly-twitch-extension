@@ -4,9 +4,9 @@ const mongoose = require("mongoose");
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
-  energy: { type: Number, default: 100 }, // Raised caps handled in logic
-  mood: { type: Number, default: 50 },
-  cleanliness: { type: Number, default: 50 },
+  energy: { type: Number, default: 50 }, // Lower start for egg
+  mood: { type: Number, default: 30 },   // Low to require care
+  cleanliness: { type: Number, default: 30 }, // Low to require care
   stage: { type: String, default: "egg" },
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
@@ -18,17 +18,18 @@ GellySchema.methods.applyDecay = function () {
   const now = Date.now();
   const hoursSince = (now - this.lastUpdated.getTime()) / (1000 * 60 * 60);
 
-  // Decay per hour
-  const decayRate = 5; 
-  this.energy = Math.max(0, this.energy - decayRate * hoursSince);
-  this.mood = Math.max(0, this.mood - decayRate * hoursSince);
-  this.cleanliness = Math.max(0, this.cleanliness - decayRate * hoursSince);
+  const decayRate = 5; // points per hour
+  const MAX_STAT = 500;
+  const MIN_STAT = 0;
+
+  this.energy = Math.min(MAX_STAT, Math.max(MIN_STAT, this.energy - decayRate * hoursSince));
+  this.mood = Math.min(MAX_STAT, Math.max(MIN_STAT, this.mood - decayRate * hoursSince));
+  this.cleanliness = Math.min(MAX_STAT, Math.max(MIN_STAT, this.cleanliness - decayRate * hoursSince));
 
   this.lastUpdated = new Date();
 };
 
 GellySchema.methods.checkGrowth = function () {
-  // NEW: Higher thresholds so growth is slow & persistent
   if (this.stage === "egg" && this.energy >= 300) {
     this.stage = "blob";
   }
@@ -38,11 +39,10 @@ GellySchema.methods.checkGrowth = function () {
 };
 
 GellySchema.methods.updateStats = function (action) {
-  const MAX_STAT = 500; // Raised cap for slower maxing
+  const MAX_STAT = 500;
   const now = Date.now();
-
-  // 60s cooldown per action type
   const cooldown = 60 * 1000;
+
   if (this.lastActionTimes.has(action)) {
     const lastTime = this.lastActionTimes.get(action).getTime();
     if (now - lastTime < cooldown) {
