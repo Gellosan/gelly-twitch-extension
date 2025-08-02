@@ -1,25 +1,15 @@
 window.Twitch.ext.onAuthorized(function (auth) {
   const twitchUserId = auth.userId;
-  console.log("[DEBUG] onAuthorized fired. twitchUserId:", twitchUserId);
+  const SERVER_URL = "https://gelly-server.onrender.com";
+  const GLOBAL_COOLDOWN = 60 * 1000;
+  let lastActionTime = 0;
 
-  if (!twitchUserId) {
-    console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
-  }
-
-  // ✅ Correct server URLs
-  const SERVER_HTTP_URL = "https://gelly-server.onrender.com"; // API requests
-  const SERVER_WS_URL = "wss://gelly-server.onrender.com";     // WebSocket connection
-
-  // ========================
-  // FEEDBACK & ANIMATION
-  // ========================
   function showTempMessage(msg, color = "#fff") {
     const el = document.getElementById("message");
     if (!el) return;
     el.innerText = msg;
     el.style.color = color;
     el.style.opacity = "1";
-
     setTimeout(() => {
       el.style.opacity = "0";
     }, 2000);
@@ -28,130 +18,93 @@ window.Twitch.ext.onAuthorized(function (auth) {
   function animateGelly(action) {
     const gellyImage = document.getElementById("gelly-image");
     if (!gellyImage) return;
-
     gellyImage.classList.add(`gelly-${action}-anim`);
     setTimeout(() => {
       gellyImage.classList.remove(`gelly-${action}-anim`);
     }, 800);
   }
 
-  // ========================
-  // WEBSOCKET
-  // ========================
   function connectWebSocket() {
-    if (!twitchUserId) {
-      console.warn("[DEBUG] No Twitch user ID, skipping WebSocket connection.");
-      return;
-    }
-    const wsUrl = `${SERVER_WS_URL}/?user=${twitchUserId}`;
-    console.log("[DEBUG] Connecting WebSocket:", wsUrl);
-
+    if (!twitchUserId) return;
+    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
     const socket = new WebSocket(wsUrl);
-
-    socket.addEventListener("open", () => console.log("[DEBUG] WebSocket connected"));
-    socket.addEventListener("error", (err) => console.error("[DEBUG] WebSocket error", err));
-
     socket.addEventListener("message", (event) => {
-      console.log("[DEBUG] WebSocket message received:", event.data);
       const msg = JSON.parse(event.data);
       if (msg.type === "update") updateUI(msg.state);
       else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
 
-  // ========================
-  // ACTION HANDLER
-  // ========================
   function interact(action) {
-    if (!twitchUserId) {
-      console.warn("[DEBUG] Attempted to interact without a Twitch user ID");
-      return showTempMessage("User not authenticated.", "red");
+    if (!twitchUserId) return showTempMessage("User not authenticated.", "red");
+    const now = Date.now();
+    if (now - lastActionTime < GLOBAL_COOLDOWN) {
+      return showTempMessage("Please wait before interacting again.", "orange");
     }
+    lastActionTime = now;
 
-    console.log(`[DEBUG] Sending action to server: ${action}`);
+    let actionMessage = "";
+    if (action === "play") actionMessage = "You play with your Gelly!";
+    else if (action === "feed") actionMessage = "You feed your Gelly!";
+    else if (action === "clean") actionMessage = "You clean your Gelly!";
 
-    // Instant animation + feedback BEFORE network finishes
     animateGelly(action);
-    showTempMessage(`You ${action} your Gelly!`, "#0f0");
+    showTempMessage(actionMessage, "#0f0");
 
-    fetch(`${SERVER_HTTP_URL}/v1/interact`, {
+    fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, user: twitchUserId }),
     })
       .then(async (res) => {
-        console.log("[DEBUG] Fetch response status:", res.status);
         const data = await res.json().catch(() => ({}));
-        console.log("[DEBUG] Fetch response data:", data);
-
         if (!data.success) {
           showTempMessage(data.message || "Action failed", "red");
         }
       })
-      .catch((err) => {
-        console.error("[DEBUG] Network error during interact:", err);
+      .catch(() => {
         showTempMessage("Network error", "red");
       });
   }
 
-  // ========================
-  // UI UPDATES
-  // ========================
   function updateLeaderboard(entries) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
-
     const sorted = [...entries].sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
       if (b.mood !== a.mood) return b.mood - a.mood;
       if (b.energy !== a.energy) return b.energy - a.energy;
       return b.cleanliness - a.cleanliness;
     });
-
-    const topTen = sorted.slice(0, 10);
     list.innerHTML = "";
-
-    topTen.forEach((entry, index) => {
+    sorted.forEach((entry, index) => {
       const li = document.createElement("li");
-      li.innerHTML = `
-        <strong>#${index + 1}</strong> ${entry.user}
-        <span> - Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
-      `;
+      li.innerHTML = `<strong>#${index + 1}</strong> ${entry.displayName || entry.userId} 
+        <em>(${entry.stage})</em> - ⭐ ${entry.points} | Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}`;
       list.appendChild(li);
     });
   }
 
   function updateUI(state) {
-    console.log("[DEBUG] Updating UI with state:", state);
     document.getElementById("energy").innerText = state.energy;
     document.getElementById("mood").innerText = state.mood;
     document.getElementById("cleanliness").innerText = state.cleanliness;
-
     const gellyImage = document.getElementById("gelly-image");
     const stage = state.stage || "egg";
     const color = state.color || "blue";
-
-    if (stage === "egg") {
-      gellyImage.src = "assets/egg.png";
-    } else if (stage === "blob") {
-      gellyImage.src = `assets/blob-${color}.png`;
-    } else if (stage === "gelly") {
-      gellyImage.src = `assets/gelly-${color}.png`;
-    }
+    if (stage === "egg") gellyImage.src = "assets/egg.png";
+    else if (stage === "blob") gellyImage.src = `assets/blob-${color}.png`;
+    else if (stage === "gelly") gellyImage.src = `assets/gelly-${color}.png`;
   }
 
-  function showHelp() {
-    console.log("[DEBUG] Toggling help box");
-    const box = document.getElementById("help-box");
-    if (box) box.style.display = box.style.display === "none" ? "block" : "none";
-  }
-
-  // ========================
-  // BUTTON LISTENERS
-  // ========================
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
-  document.getElementById("helpBtn")?.addEventListener("click", showHelp);
+  document.getElementById("helpBtn")?.addEventListener("click", () => {
+    const box = document.getElementById("help-box");
+    if (box) box.style.display = box.style.display === "none" ? "block" : "none";
+  });
 
   connectWebSocket();
 });
+
