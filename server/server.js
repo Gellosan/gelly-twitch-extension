@@ -18,14 +18,14 @@ mongoose
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
-  energy: { type: Number, default: 100 },
-  mood: { type: Number, default: 50 },
-  cleanliness: { type: Number, default: 50 },
+  energy: { type: Number, default: 0 },
+  mood: { type: Number, default: 0 },
+  cleanliness: { type: Number, default: 0 },
   stage: { type: String, default: "egg" },
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
   lastUpdated: { type: Date, default: Date.now },
-  cooldowns: { type: Object, default: {} }, // per-action cooldown timestamps
+  cooldowns: { type: Map, of: Date, default: {} },
 });
 const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 
@@ -33,7 +33,7 @@ const Gelly = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
 const app = express();
 app.use(express.json());
 
-// CORS
+// Flexible Twitch CORS
 app.use(
   cors({
     origin: (origin, callback) => {
@@ -57,6 +57,7 @@ app.use(
     credentials: true,
   })
 );
+
 app.options("*", cors());
 
 // ===== WebSocket Setup =====
@@ -72,6 +73,8 @@ wss.on("connection", (ws, req) => {
     if (userId) {
       clients.set(userId, ws);
       console.log(`🔌 WebSocket connected for user: ${userId}`);
+    } else {
+      console.warn("⚠️ WebSocket connection without userId");
     }
 
     ws.on("close", () => {
@@ -109,11 +112,11 @@ async function sendLeaderboard() {
 }
 
 // ===== StreamElements API =====
-const STREAM_ELEMENTS_JWT = "YOUR_STREAM_ELEMENTS_JWT_HERE"; // replace with your JWT
-const STREAM_ELEMENTS_BASE = "https://api.streamelements.com/kappa/v2";
+const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT; // Hardcode if needed
+const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID; // Hardcode if needed
 
-async function getJellybeans(userId) {
-  const res = await fetch(`${STREAM_ELEMENTS_BASE}/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${userId}`, {
+async function getUserPoints(userId) {
+  const res = await fetch(`https://api.streamelements.com/kappa/v2/points/${STREAM_ELEMENTS_CHANNEL_ID}/${userId}`, {
     headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` },
   });
   if (!res.ok) return null;
@@ -121,19 +124,22 @@ async function getJellybeans(userId) {
   return data.points || 0;
 }
 
-async function deductJellybeans(userId, amount) {
-  return fetch(`${STREAM_ELEMENTS_BASE}/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${userId}`, {
+async function deductUserPoints(userId, amount) {
+  const res = await fetch(`https://api.streamelements.com/kappa/v2/points/${STREAM_ELEMENTS_CHANNEL_ID}/${userId}`, {
     method: "PUT",
     headers: {
       Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({ points: -Math.abs(amount) }),
+    body: JSON.stringify({ amount: -amount }),
   });
+  return res.ok;
 }
 
 // ===== Interact Endpoint =====
 app.post("/v1/interact", async (req, res) => {
+  console.log("📥 /v1/interact hit:", req.body);
+
   try {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
@@ -141,53 +147,72 @@ app.post("/v1/interact", async (req, res) => {
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
 
-    // Cooldown check (per action)
-    const now = Date.now();
-    const cooldown = 60000; // 60 seconds
-    if (gelly.cooldowns[action] && now - gelly.cooldowns[action] < cooldown) {
-      const remaining = Math.ceil((cooldown - (now - gelly.cooldowns[action])) / 1000);
-      return res.json({ success: false, message: `Cooldown active`, cooldown: remaining });
+    // === Per-action cooldown check ===
+    const now = new Date();
+    const lastUsed = gelly.cooldowns.get(action);
+    if (lastUsed && now - lastUsed < 60000) {
+      return res.json({ success: false, message: "Action is on cooldown." });
     }
 
-    // Feed action costs jellybeans
-    if (action === "feed") {
-      const jellybeans = await getJellybeans(user);
-      if (jellybeans < 1000) {
-        return res.json({ success: false, message: "Not enough jellybeans" });
+    let pointsAwarded = 0;
+
+    if (action.startsWith("color:")) {
+      const color = action.split(":")[1];
+      const currentPoints = await getUserPoints(user);
+      if (currentPoints < 10000) {
+        return res.json({ success: false, message: "Not enough jellybeans for color change." });
       }
-      await deductJellybeans(user, 1000);
+      const deducted = await deductUserPoints(user, 10000);
+      if (!deducted) {
+        return res.json({ success: false, message: "Failed to deduct jellybeans." });
+      }
+      if (["blue", "green", "pink"].includes(color)) gelly.color = color;
+      pointsAwarded = 1;
+    } else {
+      switch (action) {
+        case "feed": {
+          const currentPoints = await getUserPoints(user);
+          if (currentPoints < 1000) {
+            return res.json({ success: false, message: "Not enough jellybeans to feed." });
+          }
+          const deducted = await deductUserPoints(user, 1000);
+          if (!deducted) {
+            return res.json({ success: false, message: "Failed to deduct jellybeans." });
+          }
+          gelly.energy += 10; // Slower growth
+          pointsAwarded = 5;
+          break;
+        }
+        case "play":
+          gelly.mood += 10;
+          pointsAwarded = 5;
+          break;
+        case "clean":
+          gelly.cleanliness += 10;
+          pointsAwarded = 5;
+          break;
+        default:
+          return res.json({ success: false, message: "Unknown action" });
+      }
     }
 
-    // Action effects (max values increased for slower growth)
-    switch (action) {
-      case "feed":
-        gelly.energy = Math.min(300, gelly.energy + 10);
-        gelly.points += 5;
-        break;
-      case "play":
-        gelly.mood = Math.min(300, gelly.mood + 10);
-        gelly.points += 5;
-        break;
-      case "clean":
-        gelly.cleanliness = Math.min(300, gelly.cleanliness + 10);
-        gelly.points += 5;
-        break;
-      default:
-        return res.json({ success: false, message: "Unknown action" });
+    // === Slow Growth Stage Logic ===
+    if (gelly.stage === "egg" && gelly.energy >= 300) {
+      gelly.stage = "blob";
+    }
+    if (gelly.stage === "blob" && gelly.mood >= 500 && gelly.cleanliness >= 500) {
+      gelly.stage = "gelly";
     }
 
-    // Stage progression
-    if (gelly.stage === "egg" && gelly.energy >= 150) gelly.stage = "blob";
-    if (gelly.stage === "blob" && gelly.mood >= 200 && gelly.cleanliness >= 200) gelly.stage = "gelly";
-
-    gelly.cooldowns[action] = now;
-    gelly.lastUpdated = new Date();
+    gelly.points += pointsAwarded;
+    gelly.cooldowns.set(action, now);
+    gelly.lastUpdated = now;
     await gelly.save();
 
     broadcastState(user, gelly);
     sendLeaderboard();
 
-    res.json({ success: true, cooldown: 60 });
+    res.json({ success: true });
   } catch (err) {
     console.error("❌ Error in /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
