@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
-const Gelly = require("./Gelly"); // <-- ensure Gelly model has applyDecay()
+const Gelly = require("./Gelly.js"); // <-- ensure Gelly model has applyDecay()
 
 // ===== MongoDB Connection =====
 mongoose
