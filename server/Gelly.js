@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
+  loginName: String, // New field for lowercase Twitch login for StreamElements lookups
   energy: { type: Number, default: 50 }, // Lower start for egg
   mood: { type: Number, default: 30 },   // Low to require care
   cleanliness: { type: Number, default: 30 }, // Low to require care
@@ -41,7 +42,7 @@ GellySchema.methods.checkGrowth = function () {
 GellySchema.methods.updateStats = function (action) {
   const MAX_STAT = 500;
   const now = Date.now();
-  const cooldown = 60 * 1000;
+  const cooldown = 60 * 1000; // This is only used internally for stat updates
 
   if (this.lastActionTimes.has(action)) {
     const lastTime = this.lastActionTimes.get(action).getTime();
@@ -70,3 +71,4 @@ GellySchema.methods.updateStats = function (action) {
 };
 
 module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
+
