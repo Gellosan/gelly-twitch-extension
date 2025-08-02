@@ -4,7 +4,6 @@ const mongoose = require("mongoose");
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
-<<<<<<< HEAD
   energy: { type: Number, default: 100 }, // Raised caps handled in logic
   mood: { type: Number, default: 50 },
   cleanliness: { type: Number, default: 50 },
@@ -13,7 +12,6 @@ const GellySchema = new mongoose.Schema({
   energy: { type: Number, default: 50 },
   mood: { type: Number, default: 30 },
   cleanliness: { type: Number, default: 30 },
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   stage: { type: String, default: "egg" },
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
@@ -25,7 +23,6 @@ GellySchema.methods.applyDecay = function () {
   const now = Date.now();
   const hoursSince = (now - this.lastUpdated.getTime()) / (1000 * 60 * 60);
 
-<<<<<<< HEAD
   // Decay per hour
   const decayRate = 5; 
   this.energy = Math.max(0, this.energy - decayRate * hoursSince);
@@ -39,16 +36,14 @@ GellySchema.methods.applyDecay = function () {
   this.energy = Math.min(MAX_STAT, Math.max(MIN_STAT, this.energy - decayRate * hoursSince));
   this.mood = Math.min(MAX_STAT, Math.max(MIN_STAT, this.mood - decayRate * hoursSince));
   this.cleanliness = Math.min(MAX_STAT, Math.max(MIN_STAT, this.cleanliness - decayRate * hoursSince));
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
+
 
   this.lastUpdated = new Date();
 };
 
 GellySchema.methods.checkGrowth = function () {
-<<<<<<< HEAD
   // NEW: Higher thresholds so growth is slow & persistent
 =======
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
   if (this.stage === "egg" && this.energy >= 300) {
     this.stage = "blob";
   }
@@ -56,8 +51,6 @@ GellySchema.methods.checkGrowth = function () {
     this.stage = "gelly";
   }
 };
-
-<<<<<<< HEAD
 GellySchema.methods.updateStats = function (action) {
   const MAX_STAT = 500; // Raised cap for slower maxing
   const now = Date.now();
@@ -75,12 +68,10 @@ GellySchema.methods.updateStats = function (action) {
 GellySchema.methods.updateStats = function (action) {
   const MAX_STAT = 500;
   let success = false;
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
 
   switch (action) {
     case "feed":
       this.energy = Math.min(MAX_STAT, this.energy + 20);
-<<<<<<< HEAD
       break;
     case "play":
       this.mood = Math.min(MAX_STAT, this.mood + 20);
@@ -97,13 +88,11 @@ GellySchema.methods.updateStats = function (action) {
     case "clean":
       this.cleanliness = Math.min(MAX_STAT, this.cleanliness + 20);
       success = true;
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
       break;
     default:
       return { success: false, message: "Unknown action" };
   }
 
-<<<<<<< HEAD
   this.lastActionTimes.set(action, new Date());
   this.checkGrowth();
   return { success: true };
@@ -114,7 +103,6 @@ GellySchema.methods.updateStats = function (action) {
   }
 
   return { success };
->>>>>>> 42ef2ca755056ceba5a0a12e197b16a2ddcb598b
 };
 
 module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
