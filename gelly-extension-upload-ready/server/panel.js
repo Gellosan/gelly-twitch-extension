@@ -11,8 +11,6 @@ const cleanlinessEl = document.getElementById("cleanliness");
 const gellyImage = document.getElementById("gelly-image");
 const leaderboardList = document.getElementById("leaderboard-list");
 const messageEl = document.getElementById("message");
-const gameScreenEl = document.getElementById("game-screen");
-const startScreenEl = document.getElementById("start-screen");
 
 // ===== Utility =====
 function showTempMessage(msg) {
@@ -90,12 +88,16 @@ async function interact(action) {
 
 // ===== Start Game =====
 function startGame() {
-  if (!gameScreenEl || !startScreenEl) {
+  const startScreen = document.getElementById("landing-page");
+  const gameScreen = document.getElementById("gelly-container");
+
+  if (!startScreen || !gameScreen) {
     console.error("[ERROR] Missing start or game screen element in HTML");
     return;
   }
-  gameScreenEl.style.display = "block";
-  startScreenEl.style.display = "none";
+
+  startScreen.style.display = "none";
+  gameScreen.style.display = "block";
 }
 
 // ===== WebSocket =====
@@ -136,4 +138,11 @@ Twitch.ext.onAuthorized(async function(auth) {
 document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
 document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
 document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
-document.getElementById("startGameBtn")?.addEventListener("click", startGame);
+
+// Attach Start Game button after DOM loads
+document.addEventListener("DOMContentLoaded", () => {
+  const startGameBtn = document.getElementById("startGameBtn");
+  if (startGameBtn) {
+    startGameBtn.addEventListener("click", startGame);
+  }
+});
