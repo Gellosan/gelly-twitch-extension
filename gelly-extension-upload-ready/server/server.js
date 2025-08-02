@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
-const Gelly = require("./Gelly.js"); // <-- ensure Gelly model has applyDecay()
+const Gelly = require("./Gelly.js");
 
 // ===== MongoDB Connection =====
 mongoose
@@ -81,7 +81,7 @@ async function sendLeaderboard() {
   }
 }
 
-// ===== Twitch & StreamElements Helpers (unchanged from our last working version) =====
+// ===== Twitch & StreamElements Helpers =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -180,10 +180,21 @@ app.post("/v1/interact", async (req, res) => {
     }
     const username = gelly.displayName;
 
-    // Per-action cooldown
+    // Per-action cooldowns (ms)
+    const ACTION_COOLDOWNS = {
+      feed: 300000,  // 5 min
+      clean: 240000, // 4 min
+      play: 180000,  // 3 min
+      color: 60000   // 1 min
+    };
+
+    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
     const now = new Date();
-    if (gelly.lastActionTimes[action] && now - gelly.lastActionTimes[action] < 60000) {
-      return res.json({ success: false, message: "That action is on cooldown." });
+
+    if (gelly.lastActionTimes[cooldownKey] && now - gelly.lastActionTimes[cooldownKey] < cooldown) {
+      const remaining = Math.ceil((cooldown - (now - gelly.lastActionTimes[cooldownKey])) / 1000);
+      return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
     }
 
     let pointsAwarded = 0;
@@ -225,16 +236,17 @@ app.post("/v1/interact", async (req, res) => {
 
     gelly.points += pointsAwarded;
     gelly.lastUpdated = now;
-    gelly.lastActionTimes[action] = now;
+    gelly.lastActionTimes[cooldownKey] = now;
     await gelly.save();
 
     broadcastState(user, gelly);
     sendLeaderboard();
     res.json({ success: true });
   } catch (err) {
+    console.error(err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PO
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
