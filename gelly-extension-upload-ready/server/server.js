@@ -2,7 +2,6 @@ const express = require("express");
 const mongoose = require("mongoose");
 const cors = require("cors");
 const WebSocket = require("ws");
-const fetch = require("node-fetch");
 require("dotenv").config();
 
 // ===== MongoDB Connection =====
