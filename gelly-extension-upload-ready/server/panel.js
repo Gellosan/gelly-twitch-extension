@@ -6,15 +6,59 @@ window.Twitch.ext.onAuthorized(function (auth) {
     console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
   }
 
-  const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
+  const SERVER_URL = "https://gelly-server.onrender.com";
 
+  // ========================
+  // COOLDOWN SETTINGS
+  // ========================
+  const COOLDOWN_MS = 60000; // 60 seconds per action
+  const lastActionTimes = { feed: 0, play: 0, clean: 0, color: 0 };
+
+  function canUseAction(action) {
+    const now = Date.now();
+    if (now - lastActionTimes[action] < COOLDOWN_MS) {
+      const remaining = Math.ceil((COOLDOWN_MS - (now - lastActionTimes[action])) / 1000);
+      showTempMessage(`Please wait ${remaining}s before ${action} again.`, "yellow");
+      return false;
+    }
+    lastActionTimes[action] = now;
+    return true;
+  }
+
+  // ========================
+  // FEEDBACK & ANIMATION
+  // ========================
+  function showTempMessage(msg, color = "#fff") {
+    const el = document.getElementById("message");
+    if (!el) return;
+    el.innerText = msg;
+    el.style.color = color;
+    el.style.opacity = "1";
+
+    setTimeout(() => {
+      el.style.opacity = "0";
+    }, 2500);
+  }
+
+  function animateGelly(action) {
+    const gellyImage = document.getElementById("gelly-image");
+    if (!gellyImage) return;
+
+    gellyImage.classList.add(`gelly-${action}-anim`);
+    setTimeout(() => {
+      gellyImage.classList.remove(`gelly-${action}-anim`);
+    }, 800);
+  }
+
+  // ========================
+  // WEBSOCKET
+  // ========================
   function connectWebSocket() {
     if (!twitchUserId) {
       console.warn("[DEBUG] No Twitch user ID, skipping WebSocket connection.");
       return;
     }
-
-    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${encodeURIComponent(twitchUserId)}`;
+    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
     console.log("[DEBUG] Connecting WebSocket:", wsUrl);
 
     const socket = new WebSocket(wsUrl);
@@ -24,23 +68,33 @@ window.Twitch.ext.onAuthorized(function (auth) {
 
     socket.addEventListener("message", (event) => {
       console.log("[DEBUG] WebSocket message received:", event.data);
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg.type === "update") updateUI(msg.state);
-        else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
-      } catch (e) {
-        console.error("[DEBUG] Failed to parse WebSocket message:", e);
-      }
+      const msg = JSON.parse(event.data);
+      if (msg.type === "update") updateUI(msg.state);
+      else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
 
+  // ========================
+  // ACTION HANDLER
+  // ========================
   function interact(action) {
     if (!twitchUserId) {
       console.warn("[DEBUG] Attempted to interact without a Twitch user ID");
-      return showMessage("User not authenticated.");
+      return showTempMessage("User not authenticated.", "red");
     }
 
+    // Respect per-action cooldown
+    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    if (!canUseAction(cooldownKey)) return;
+
     console.log(`[DEBUG] Sending action to server: ${action}`);
+
+    const actionMessage =
+      action === "play" ? "You play with your Gelly!" : `You ${action} your Gelly!`;
+
+    animateGelly(action.includes("color:") ? "color" : action);
+    showTempMessage(actionMessage, "#0f0");
+
     fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -52,95 +106,63 @@ window.Twitch.ext.onAuthorized(function (auth) {
         console.log("[DEBUG] Fetch response data:", data);
 
         if (!data.success) {
-          showMessage(data.message || "Action failed");
-        } else {
-          console.log("[DEBUG] Action succeeded:", action);
-          triggerFeedback(action); // Show visual/audio feedback
+          showTempMessage(data.message || "Action failed", "red");
         }
       })
       .catch((err) => {
         console.error("[DEBUG] Network error during interact:", err);
-        showMessage("Network error");
+        showTempMessage("Network error", "red");
       });
   }
 
-  function triggerFeedback(action) {
-    const gellyImage = document.getElementById("gelly-image");
-
-    if (!gellyImage) return;
-
-    // Add animation class
-    gellyImage.classList.add("action-feedback");
-
-    // Play sound based on action
-    let soundSrc = "";
-    if (action === "feed") soundSrc = "assets/sounds/feed.mp3";
-    if (action === "play") soundSrc = "assets/sounds/play.mp3";
-    if (action === "clean") soundSrc = "assets/sounds/clean.mp3";
-
-    if (soundSrc) {
-      const sound = new Audio(soundSrc);
-      sound.volume = 0.5;
-      sound.play().catch(() => {}); // Avoid autoplay restrictions
-    }
-
-    // Remove animation after 500ms
-    setTimeout(() => {
-      gellyImage.classList.remove("action-feedback");
-    }, 500);
-  }
-
+  // ========================
+  // UI UPDATES
+  // ========================
   function updateLeaderboard(entries) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
 
     const sorted = [...entries].sort((a, b) => {
+      if (b.points !== a.points) return b.points - a.points;
       if (b.mood !== a.mood) return b.mood - a.mood;
       if (b.energy !== a.energy) return b.energy - a.energy;
       return b.cleanliness - a.cleanliness;
     });
 
+    const topTen = sorted.slice(0, 10);
     list.innerHTML = "";
-    sorted.slice(0, 10).forEach((entry, index) => {
-      const name = entry.displayName || entry.userId || "Unknown";
+
+    topTen.forEach((entry, index) => {
       const li = document.createElement("li");
-      li.innerHTML = `<strong>#${index + 1}</strong> ${name} - Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}`;
+      li.innerHTML = `
+        <strong>#${index + 1}</strong> ${entry.displayName || entry.userId}
+        <span> - Points: ${entry.points} | Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span>
+      `;
       list.appendChild(li);
     });
   }
 
   function updateUI(state) {
     console.log("[DEBUG] Updating UI with state:", state);
-
-    const energyEl = document.getElementById("energy");
-    const moodEl = document.getElementById("mood");
-    const cleanEl = document.getElementById("cleanliness");
-    if (energyEl) energyEl.innerText = state.energy;
-    if (moodEl) moodEl.innerText = state.mood;
-    if (cleanEl) cleanEl.innerText = state.cleanliness;
+    document.getElementById("energy").innerText = state.energy;
+    document.getElementById("mood").innerText = state.mood;
+    document.getElementById("cleanliness").innerText = state.cleanliness;
 
     const gellyImage = document.getElementById("gelly-image");
-    if (gellyImage) {
-      const stage = state.stage || "egg";
-      const color = state.color || "blue";
-      if (stage === "egg") {
-        gellyImage.src = "assets/egg.png";
-      } else if (stage === "blob") {
-        gellyImage.src = `assets/blob-${color}.png`;
-      } else if (stage === "gelly") {
-        gellyImage.src = `assets/gelly-${color}.png`;
-      }
-    }
-  }
+    const stage = state.stage || "egg";
+    const color = state.color || "blue";
 
-  function showMessage(msg) {
-    console.log("[DEBUG] showMessage:", msg);
-    const el = document.getElementById("message");
-    if (!el) return;
-    el.innerText = msg;
-    setTimeout(() => {
-      if (el) el.innerText = "";
-    }, 3000);
+    if (stage === "egg") {
+      gellyImage.src = "assets/egg.png";
+    } else if (stage === "blob") {
+      gellyImage.src = `assets/blob-${color}.png`;
+    } else if (stage === "gelly") {
+      gellyImage.src = `assets/gelly-${color}.png`;
+    }
+
+    // Ensure proper scaling
+    gellyImage.style.maxWidth = "100%";
+    gellyImage.style.height = "auto";
   }
 
   function showHelp() {
@@ -149,10 +171,16 @@ window.Twitch.ext.onAuthorized(function (auth) {
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
 
-  // Attach button listeners
+  // ========================
+  // BUTTON LISTENERS
+  // ========================
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
+  document.getElementById("gellyColor")?.addEventListener("change", (e) => {
+    const color = e.target.value;
+    interact(`color:${color}`);
+  });
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 
   connectWebSocket();
