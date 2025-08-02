@@ -108,7 +108,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
     );
     list.innerHTML = sorted.slice(0, 10).map((entry, i) =>
       `<li><strong>#${i + 1}</strong> ${entry.displayName || entry.userId}
-      <span> - Points: ${entry.points} | Mood: ${entry.mood} | Energy: ${entry.energy} | Cleanliness: ${entry.cleanliness}</span></li>`
+      <span> - Points: ${entry.points} | Mood: ${Math.round(entry.mood)} | Energy: ${Math.round(entry.energy)} | Cleanliness: ${Math.round(entry.cleanliness)}</span></li>`
     ).join("");
   }
 
@@ -118,9 +118,10 @@ window.Twitch.ext.onAuthorized(function (auth) {
     }
     lastStage = state.stage;
 
-    document.getElementById("energy").innerText = state.energy;
-    document.getElementById("mood").innerText = state.mood;
-    document.getElementById("cleanliness").innerText = state.cleanliness;
+    // ✅ Round values for cleaner display
+    document.getElementById("energy").innerText = Math.round(state.energy);
+    document.getElementById("mood").innerText = Math.round(state.mood);
+    document.getElementById("cleanliness").innerText = Math.round(state.cleanliness);
 
     const gellyImage = document.getElementById("gelly-image");
     const stage = state.stage || "egg";
