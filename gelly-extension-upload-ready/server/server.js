@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
-const Gelly = require("./Gelly"); // <-- ensure Gelly model has applyDecay()
+const Gelly = require("./Gelly.js"); // <-- ensure Gelly model has applyDecay()
 
 // ===== MongoDB Connection =====
 mongoose
@@ -237,4 +237,4 @@ app.post("/v1/interact", async (req, res) => {
 });
 
 const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+server.listen(PORT, () => console.log(`🚀 Server running on port ${PO
