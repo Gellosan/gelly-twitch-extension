@@ -185,4 +185,3 @@ window.Twitch.ext.onAuthorized(function (auth) {
 
   connectWebSocket();
 });
-
