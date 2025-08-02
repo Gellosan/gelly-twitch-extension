@@ -6,48 +6,44 @@ window.Twitch.ext.onAuthorized(function (auth) {
     console.warn("[DEBUG] No Twitch user ID detected. Buttons will not send requests.");
   }
 
-  const SERVER_URL = "https://gelly-panel-kkp9.onrender.com";
+  // ✅ Correct server URLs
+  const SERVER_HTTP_URL = "https://gelly-server.onrender.com"; // API requests
+  const SERVER_WS_URL = "wss://gelly-server.onrender.com";     // WebSocket connection
 
-  /** ========================
-   *  Feedback UI Helpers
-   *  ======================== */
-  function showFeedback(message) {
-    console.log("[DEBUG] showFeedback:", message);
+  // ========================
+  // FEEDBACK & ANIMATION
+  // ========================
+  function showTempMessage(msg, color = "#fff") {
+    const el = document.getElementById("message");
+    if (!el) return;
+    el.innerText = msg;
+    el.style.color = color;
+    el.style.opacity = "1";
 
-    // Remove any old message
-    const oldMessage = document.getElementById("feedback-message");
-    if (oldMessage) oldMessage.remove();
-
-    // Create new feedback element
-    const msg = document.createElement("div");
-    msg.id = "feedback-message";
-    msg.innerText = message;
-    document.body.appendChild(msg);
-
-    // Remove after animation
     setTimeout(() => {
-      if (msg) msg.remove();
-    }, 2500);
+      el.style.opacity = "0";
+    }, 2000);
   }
 
-  function animateGellyPop() {
+  function animateGelly(action) {
     const gellyImage = document.getElementById("gelly-image");
     if (!gellyImage) return;
-    gellyImage.classList.add("pop");
+
+    gellyImage.classList.add(`gelly-${action}-anim`);
     setTimeout(() => {
-      gellyImage.classList.remove("pop");
-    }, 300);
+      gellyImage.classList.remove(`gelly-${action}-anim`);
+    }, 800);
   }
 
-  /** ========================
-   *  WebSocket Connection
-   *  ======================== */
+  // ========================
+  // WEBSOCKET
+  // ========================
   function connectWebSocket() {
     if (!twitchUserId) {
       console.warn("[DEBUG] No Twitch user ID, skipping WebSocket connection.");
       return;
     }
-    const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
+    const wsUrl = `${SERVER_WS_URL}/?user=${twitchUserId}`;
     console.log("[DEBUG] Connecting WebSocket:", wsUrl);
 
     const socket = new WebSocket(wsUrl);
@@ -58,29 +54,27 @@ window.Twitch.ext.onAuthorized(function (auth) {
     socket.addEventListener("message", (event) => {
       console.log("[DEBUG] WebSocket message received:", event.data);
       const msg = JSON.parse(event.data);
-
-      if (msg.type === "update") {
-        updateUI(msg.state);
-      } else if (msg.type === "leaderboard") {
-        updateLeaderboard(msg.entries);
-      } else if (msg.type === "feedback") {
-        animateGellyPop();
-        showFeedback(msg.message);
-      }
+      if (msg.type === "update") updateUI(msg.state);
+      else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
 
-  /** ========================
-   *  Interaction
-   *  ======================== */
+  // ========================
+  // ACTION HANDLER
+  // ========================
   function interact(action) {
     if (!twitchUserId) {
       console.warn("[DEBUG] Attempted to interact without a Twitch user ID");
-      return showFeedback("User not authenticated.");
+      return showTempMessage("User not authenticated.", "red");
     }
 
     console.log(`[DEBUG] Sending action to server: ${action}`);
-    fetch(`${SERVER_URL}/v1/interact`, {
+
+    // Instant animation + feedback BEFORE network finishes
+    animateGelly(action);
+    showTempMessage(`You ${action} your Gelly!`, "#0f0");
+
+    fetch(`${SERVER_HTTP_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action, user: twitchUserId }),
@@ -91,20 +85,18 @@ window.Twitch.ext.onAuthorized(function (auth) {
         console.log("[DEBUG] Fetch response data:", data);
 
         if (!data.success) {
-          showFeedback(data.message || "Action failed");
-        } else {
-          console.log("[DEBUG] Action succeeded:", action);
+          showTempMessage(data.message || "Action failed", "red");
         }
       })
       .catch((err) => {
         console.error("[DEBUG] Network error during interact:", err);
-        showFeedback("Network error");
+        showTempMessage("Network error", "red");
       });
   }
 
-  /** ========================
-   *  Leaderboard UI
-   *  ======================== */
+  // ========================
+  // UI UPDATES
+  // ========================
   function updateLeaderboard(entries) {
     const list = document.getElementById("leaderboard-list");
     if (!list) return;
@@ -128,9 +120,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
     });
   }
 
-  /** ========================
-   *  Gelly State UI
-   *  ======================== */
   function updateUI(state) {
     console.log("[DEBUG] Updating UI with state:", state);
     document.getElementById("energy").innerText = state.energy;
@@ -150,18 +139,15 @@ window.Twitch.ext.onAuthorized(function (auth) {
     }
   }
 
-  /** ========================
-   *  Help Toggle
-   *  ======================== */
   function showHelp() {
     console.log("[DEBUG] Toggling help box");
     const box = document.getElementById("help-box");
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
 
-  /** ========================
-   *  Button Listeners
-   *  ======================== */
+  // ========================
+  // BUTTON LISTENERS
+  // ========================
   document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
   document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
   document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
