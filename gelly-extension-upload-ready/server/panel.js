@@ -1,3 +1,4 @@
+// panel.js
 window.Twitch.ext.onAuthorized(function (auth) {
   const twitchUserId = auth.userId;
   console.log("[DEBUG] onAuthorized fired. twitchUserId:", twitchUserId);
@@ -34,16 +35,12 @@ window.Twitch.ext.onAuthorized(function (auth) {
     el.innerText = msg;
     el.style.color = color;
     el.style.opacity = "1";
-
-    setTimeout(() => {
-      el.style.opacity = "0";
-    }, 2500);
+    setTimeout(() => { el.style.opacity = "0"; }, 2500);
   }
 
   function animateGelly(action) {
     const gellyImage = document.getElementById("gelly-image");
     if (!gellyImage) return;
-
     gellyImage.classList.add(`gelly-${action}-anim`);
     setTimeout(() => {
       gellyImage.classList.remove(`gelly-${action}-anim`);
@@ -62,7 +59,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
     console.log("[DEBUG] Connecting WebSocket:", wsUrl);
 
     const socket = new WebSocket(wsUrl);
-
     socket.addEventListener("open", () => console.log("[DEBUG] WebSocket connected"));
     socket.addEventListener("error", (err) => console.error("[DEBUG] WebSocket error", err));
 
@@ -83,7 +79,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
       return showTempMessage("User not authenticated.", "red");
     }
 
-    // Respect per-action cooldown
     const cooldownKey = action.startsWith("color:") ? "color" : action;
     if (!canUseAction(cooldownKey)) return;
 
@@ -98,13 +93,15 @@ window.Twitch.ext.onAuthorized(function (auth) {
     fetch(`${SERVER_URL}/v1/interact`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action, user: twitchUserId }),
+      body: JSON.stringify({
+        action,
+        user: twitchUserId // Backend resolves display name
+      }),
     })
       .then(async (res) => {
         console.log("[DEBUG] Fetch response status:", res.status);
         const data = await res.json().catch(() => ({}));
         console.log("[DEBUG] Fetch response data:", data);
-
         if (!data.success) {
           showTempMessage(data.message || "Action failed", "red");
         }
@@ -160,7 +157,6 @@ window.Twitch.ext.onAuthorized(function (auth) {
       gellyImage.src = `assets/gelly-${color}.png`;
     }
 
-    // Ensure proper scaling
     gellyImage.style.maxWidth = "100%";
     gellyImage.style.height = "auto";
   }
@@ -170,6 +166,33 @@ window.Twitch.ext.onAuthorized(function (auth) {
     const box = document.getElementById("help-box");
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
+
+  // ========================
+  // LANDING PAGE → START GAME
+  // ========================
+  document.getElementById("startGameBtn")?.addEventListener("click", () => {
+    if (!twitchUserId) {
+      showTempMessage("User not authenticated.", "red");
+      return;
+    }
+
+    fetch(`${SERVER_URL}/v1/state/${twitchUserId}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          updateUI(data.state);
+          document.getElementById("landing-page").style.display = "none";
+          document.getElementById("gelly-container").style.display = "block";
+          connectWebSocket(); // Connect after game starts
+        } else {
+          showTempMessage("Failed to load Gelly.", "red");
+        }
+      })
+      .catch(err => {
+        console.error("[DEBUG] Error fetching Gelly state:", err);
+        showTempMessage("Error loading game", "red");
+      });
+  });
 
   // ========================
   // BUTTON LISTENERS
@@ -182,6 +205,4 @@ window.Twitch.ext.onAuthorized(function (auth) {
     interact(`color:${color}`);
   });
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
-
-  connectWebSocket();
 });
