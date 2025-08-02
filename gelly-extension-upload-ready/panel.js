@@ -60,13 +60,16 @@ window.Twitch.ext.onAuthorized(function (auth) {
     }
   }
 
-  function connectWebSocket() {
+  function connectWebSocket(username) {
     if (!twitchUserId) return;
     const wsUrl = `${SERVER_URL.replace(/^http/, "ws")}/?user=${twitchUserId}`;
     const socket = new WebSocket(wsUrl);
     socket.addEventListener("message", (event) => {
       const msg = JSON.parse(event.data);
-      if (msg.type === "update") updateUI(msg.state);
+      if (msg.type === "update") {
+        updateUI(msg.state);
+        fetchJellybeanBalance(username); // ✅ keep balance fresh
+      }
       else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
     });
   }
@@ -86,7 +89,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
       });
   }
 
-  function interact(action) {
+  function interact(action, username) {
     if (!twitchUserId) return showTempMessage("User not authenticated.", "red");
     const cooldownKey = action.startsWith("color:") ? "color" : action;
     if (!canUseAction(cooldownKey)) return;
@@ -107,7 +110,7 @@ window.Twitch.ext.onAuthorized(function (auth) {
         if (!data.success) {
           showTempMessage(data.message || "Action failed", "red");
         } else {
-          fetchJellybeanBalance("gellosan"); // refresh balance on success
+          fetchJellybeanBalance(username); // ✅ refresh after action
         }
       })
       .catch(() => showTempMessage("Network error", "red"));
@@ -148,8 +151,13 @@ window.Twitch.ext.onAuthorized(function (auth) {
     if (box) box.style.display = box.style.display === "none" ? "block" : "none";
   }
 
+  // ✅ On start button click
   document.getElementById("startGameBtn")?.addEventListener("click", () => {
     if (!twitchUserId) return showTempMessage("User not authenticated.", "red");
+
+    // Hardcoding for now since your SE username is fixed
+    const username = "gellosan";
+
     fetch(`${SERVER_URL}/v1/state/${twitchUserId}`)
       .then(res => res.json())
       .then(data => {
@@ -158,20 +166,19 @@ window.Twitch.ext.onAuthorized(function (auth) {
           updateUI(data.state);
           document.getElementById("landing-page").style.display = "none";
           document.getElementById("gelly-container").style.display = "block";
-          connectWebSocket();
-          fetchJellybeanBalance("gellosan"); // load balance on game start
+          connectWebSocket(username);
+          fetchJellybeanBalance(username); // ✅ get balance on game start
         } else {
           showTempMessage("Failed to load Gelly.", "red");
         }
       });
   });
 
-  document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
-  document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
-  document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
+  document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed", "gellosan"));
+  document.getElementById("playBtn")?.addEventListener("click", () => interact("play", "gellosan"));
+  document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean", "gellosan"));
   document.getElementById("gellyColor")?.addEventListener("change", (e) => {
-    interact(`color:${e.target.value}`);
+    interact(`color:${e.target.value}`, "gellosan");
   });
   document.getElementById("helpBtn")?.addEventListener("click", showHelp);
 });
-
