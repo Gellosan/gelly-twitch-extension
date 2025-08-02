@@ -25,7 +25,7 @@ function animateGelly() {
 
 function updateGellyImage(stage, color) {
   if (stage === "egg") {
-    gellyImage.src = `assets/egg_${color}.png`;
+    gellyImage.src = `assets/egg.png`; // Always the same egg sprite
   } else if (stage === "blob") {
     gellyImage.src = `assets/blob_${color}.png`;
   } else {
