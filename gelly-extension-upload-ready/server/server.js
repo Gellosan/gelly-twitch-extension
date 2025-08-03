@@ -151,7 +151,7 @@ async function deductUserPoints(username, amount) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: `!points add ${username} -${Math.abs(amount)}`,
+          message: `!addpoints ${username} -${Math.abs(amount)}`,
         }),
       }
     );
