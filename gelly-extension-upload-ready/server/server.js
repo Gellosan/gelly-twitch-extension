@@ -4,13 +4,13 @@ const cors = require("cors");
 const WebSocket = require("ws");
 require("dotenv").config();
 const Gelly = require("./Gelly.js");
+const app = express();
 
 mongoose
   .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB connected"))
   .catch((err) => console.error("❌ Mongo Error:", err));
 
-const app = express();
 app.use(express.json());
 app.use(
   cors({
@@ -141,20 +141,31 @@ async function getUserPoints(username) {
 
 async function deductUserPoints(username, amount) {
   try {
-    // Use negative number to subtract points
     const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
+      `https://api.streamelements.com/kappa/v2/points/${67c5724091fe00099031263f}/${encodeURIComponent(username)}`,
       {
-        method: "POST",
+        method: "PUT",
         headers: {
-          Authorization: `Bearer ${process.env.STREAMELEMENTS_JWT}`,
+          Authorization: `Bearer ${eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaXRhZGVsIiwiZXhwIjoxNzU2NTQ1MDg4LCJqdGkiOiI4ZGMzNDMxZS0xZWI4LTQ3ODQtYTU1Ny0zODBhMWYyNjJlM2YiLCJjaGFubmVsIjoiNjdjNTcyNDA5MWZlMDAwOTkwMzEyNjNmIiwicm9sZSI6Im93bmVyIiwiYXV0aFRva2VuIjoiSkNVNVBZakRETzB6WFlmZ1l5T3EyTG04M3FUbjkya3B0SnJkWVg3dTZvUlRxUHhDIiwidXNlciI6IjY3YzU3MjQwOTFmZTAwMDk5MDMxMjYzZSIsInVzZXJfaWQiOiJlM2RjYjFkMy00NDNiLTQ1ODgtODQ4Ny0xMmRiYjMxZGRjOGUiLCJ1c2VyX3JvbGUiOiJjcmVhdG9yIiwicHJvdmlkZXIiOiJ0d2l0Y2giLCJwcm92aWRlcl9pZCI6IjUzMjQ0NzI1NyIsImNoYW5uZWxfaWQiOiI5YTljZGIzYy1hNDlmLTQ1OGUtODA2Zi03YjE5NGFhZTgzNzEiLCJjcmVhdG9yX2lkIjoiNTkyNTdlZjgtZDNiOS00YzNiLWFhMDMtMzMzOWU1ZDk0YTIwIn0.tYrIHGEhYfT1fxVPQayV7uRUqh52sYzJzPhhcTwB-lA}`, // from your .env
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: `!addpoints ${username} -${Math.abs(amount)}`,
+          points: -Math.abs(amount) // negative number to subtract
         }),
       }
     );
+
+    if (!res.ok) {
+      const errText = await res.text();
+      console.error("[ERROR] Failed to deduct points via SE API:", errText);
+    } else {
+      console.log(`[DEBUG] Deducted ${amount} Jellybeans from ${username} via SE API`);
+    }
+  } catch (err) {
+    console.error("[ERROR] deductUserPoints via SE API:", err);
+  }
+}
+
 
     if (!res.ok) {
       const errText = await res.text();
@@ -224,15 +235,14 @@ app.post("/v1/interact", async (req, res) => {
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
     let userPoints;
 
-// Use cached value if available and recent (5 seconds old or less)
-if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
-  userPoints = lastKnownPoints[usernameForPoints].points;
-  console.log(`[DEBUG] Using cached points: ${userPoints}`);
-} else {
-  userPoints = await getUserPoints(usernameForPoints);
-  console.log(`[DEBUG] SE returned points: ${userPoints}`);
-}
-
+    // Use cached value if available and recent (5 seconds old or less)
+    if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
+      userPoints = lastKnownPoints[usernameForPoints].points;
+      console.log(`[DEBUG] Using cached points: ${userPoints}`);
+    } else {
+      userPoints = await getUserPoints(usernameForPoints);
+      console.log(`[DEBUG] SE returned points: ${userPoints}`);
+    }
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -295,16 +305,14 @@ if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[username
       await gelly.save();
 
       // ✅ Instantly update balance without waiting for SE delay
-      // Deduct and update cache
-const updatedBalance = Math.max(0, userPoints - deductionAmount);
-lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
+      const updatedBalance = Math.max(0, userPoints - deductionAmount);
+      lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
 
       // Send updates to panel + leaderboard
       broadcastState(user, gelly);
       sendLeaderboard();
 
       return res.json({ success: true, newBalance: updatedBalance });
-
     }
 
     res.json({ success: false, message: "Action failed" });
