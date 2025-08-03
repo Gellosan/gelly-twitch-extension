@@ -229,17 +229,8 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     const usernameForPoints = gelly.loginName;
-    console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
-    let userPoints;
-
-    // Use cached value if available and recent (5 seconds old or less)
-    if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
-      userPoints = lastKnownPoints[usernameForPoints].points;
-      console.log(`[DEBUG] Using cached points: ${userPoints}`);
-    } else {
-      userPoints = await getUserPoints(usernameForPoints);
-      console.log(`[DEBUG] SE returned points: ${userPoints}`);
-    }
+    let userPoints = await getUserPoints(usernameForPoints);
+    console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints} | Current points: ${userPoints}`);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -271,7 +262,7 @@ app.post("/v1/interact", async (req, res) => {
         return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       }
       await deductUserPoints(usernameForPoints, deductionAmount);
-      gelly.color = action.split(":")[1] || "blue"; // always save color
+      gelly.color = action.split(":")[1] || "blue";
       actionSucceeded = true;
 
     // ===== PLAY =====
@@ -301,11 +292,8 @@ app.post("/v1/interact", async (req, res) => {
       gelly.lastActionTimes[cooldownKey] = now;
       await gelly.save();
 
-      // ✅ Instantly update balance without waiting for SE delay
-      const updatedBalance = Math.max(0, userPoints - deductionAmount);
-      lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
+      const updatedBalance = await getUserPoints(usernameForPoints);
 
-      // Send updates to panel + leaderboard
       broadcastState(user, gelly);
       sendLeaderboard();
 
