@@ -160,7 +160,7 @@ app.get("/v1/points/:username", async (req, res) => {
 });
 
 app.post("/v1/interact", async (req, res) => {
-  try {
+    try {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
@@ -182,7 +182,7 @@ app.post("/v1/interact", async (req, res) => {
 
     const usernameForPoints = gelly.loginName;
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
-    const userPoints = await getUserPoints(usernameForPoints);
+    let userPoints = await getUserPoints(usernameForPoints);
     console.log(`[DEBUG] SE returned points: ${userPoints}`);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
@@ -197,46 +197,39 @@ app.post("/v1/interact", async (req, res) => {
 
     let actionSucceeded = false;
 
-    switch (true) {
-      case action === "feed":
-        if (userPoints < 1000) {
-          return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-        }
-        await deductUserPoints(usernameForPoints, 1000);
-        gelly.energy = Math.min(500, gelly.energy + 20);
-        actionSucceeded = true;
-        break;
-
-      case action.startsWith("color:"):
-        if (userPoints < 5000) {
-          return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-        }
-        await deductUserPoints(usernameForPoints, 5000);
-        gelly.color = action.split(":")[1] || "blue";
-        actionSucceeded = true;
-        break;
-
-      case action === "play":
-        gelly.mood = Math.min(500, gelly.mood + 20);
-        actionSucceeded = true;
-        break;
-
-      case action === "clean":
-        gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
-        actionSucceeded = true;
-        break;
-
-      case action === "startgame":
-        gelly.points = 0;
-        gelly.energy = 100;
-        gelly.mood = 100;
-        gelly.cleanliness = 100;
-        gelly.lastUpdated = new Date();
-        actionSucceeded = true;
-        break;
-
-      default:
-        return res.json({ success: false, message: "Unknown action" });
+    if (action === "feed") {
+      if (userPoints < 1000) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+      const beforePoints = userPoints;
+      await deductUserPoints(usernameForPoints, 1000);
+      await new Promise(r => setTimeout(r, 1500)); // allow SE API to update
+      userPoints = await getUserPoints(usernameForPoints);
+      console.log(`[DEBUG] Feed points change: ${beforePoints} -> ${userPoints}`);
+      gelly.energy = Math.min(500, gelly.energy + 20);
+      actionSucceeded = true;
+    } else if (action.startsWith("color:")) {
+      if (userPoints < 5000) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+      const beforePoints = userPoints;
+      await deductUserPoints(usernameForPoints, 5000);
+      await new Promise(r => setTimeout(r, 1500));
+      userPoints = await getUserPoints(usernameForPoints);
+      console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
+      gelly.color = action.split(":")[1] || "blue";
+      actionSucceeded = true;
+    } else if (action === "play") {
+      gelly.mood = Math.min(500, gelly.mood + 20);
+      actionSucceeded = true;
+    } else if (action === "clean") {
+      gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
+      actionSucceeded = true;
+    } else if (action === "startgame") {
+      gelly.points = 0;
+      gelly.energy = 100;
+      gelly.mood = 100;
+      gelly.cleanliness = 100;
+      gelly.lastUpdated = new Date();
+      actionSucceeded = true;
+    } else {
+      return res.json({ success: false, message: "Unknown action" });
     }
 
     if (actionSucceeded) {
@@ -254,6 +247,7 @@ app.post("/v1/interact", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 
 const PORT = process.env.PORT || 10000;
