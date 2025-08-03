@@ -160,7 +160,7 @@ app.get("/v1/points/:username", async (req, res) => {
 });
 
 app.post("/v1/interact", async (req, res) => {
-    try {
+      try {
     const { user, action } = req.body;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
@@ -201,7 +201,7 @@ app.post("/v1/interact", async (req, res) => {
       if (userPoints < 1000) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
       const beforePoints = userPoints;
       await deductUserPoints(usernameForPoints, 1000);
-      await new Promise(r => setTimeout(r, 1500)); // allow SE API to update
+      await new Promise(r => setTimeout(r, 2000));
       userPoints = await getUserPoints(usernameForPoints);
       console.log(`[DEBUG] Feed points change: ${beforePoints} -> ${userPoints}`);
       gelly.energy = Math.min(500, gelly.energy + 20);
@@ -210,7 +210,7 @@ app.post("/v1/interact", async (req, res) => {
       if (userPoints < 5000) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       const beforePoints = userPoints;
       await deductUserPoints(usernameForPoints, 5000);
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 2000));
       userPoints = await getUserPoints(usernameForPoints);
       console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
       gelly.color = action.split(":")[1] || "blue";
@@ -247,7 +247,6 @@ app.post("/v1/interact", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 
 const PORT = process.env.PORT || 10000;
