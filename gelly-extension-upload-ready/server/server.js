@@ -235,37 +235,27 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     let actionSucceeded = false;
+    let deductionAmount = 0;
 
     // ===== FEED =====
     if (action === "feed") {
-      if (userPoints < 1000) {
+      deductionAmount = 1000;
+      if (userPoints < deductionAmount) {
         return res.json({ success: false, message: "Not enough Jellybeans to feed." });
       }
-      const beforePoints = userPoints;
-      await deductUserPoints(usernameForPoints, 1000);
-      await new Promise(r => setTimeout(r, 2000));
-      userPoints = await getUserPoints(usernameForPoints);
-      console.log(`[DEBUG] Feed points change: ${beforePoints} -> ${userPoints}`);
+      await deductUserPoints(usernameForPoints, deductionAmount);
       gelly.energy = Math.min(500, gelly.energy + 20);
       actionSucceeded = true;
 
     // ===== COLOR CHANGE =====
-   } else if (action.startsWith("color:")) {
-  if (userPoints < 10000) {
-    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-  }
-  const beforePoints = userPoints;
-  await deductUserPoints(usernameForPoints, 10000);
-  await new Promise(r => setTimeout(r, 2000));
-  userPoints = await getUserPoints(usernameForPoints);
-
-  console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
-
-  // Always save, even if same color
-  gelly.color = action.split(":")[1] || "blue";
-
-  actionSucceeded = true;
-}
+    } else if (action.startsWith("color:")) {
+      deductionAmount = 10000;
+      if (userPoints < deductionAmount) {
+        return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+      }
+      await deductUserPoints(usernameForPoints, deductionAmount);
+      gelly.color = action.split(":")[1] || "blue"; // always save color
+      actionSucceeded = true;
 
     // ===== PLAY =====
     } else if (action === "play") {
@@ -286,18 +276,21 @@ app.post("/v1/interact", async (req, res) => {
       gelly.lastUpdated = new Date();
       actionSucceeded = true;
 
-    // ===== UNKNOWN =====
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
 
-    // ===== SAVE & BROADCAST =====
     if (actionSucceeded) {
       gelly.lastActionTimes[cooldownKey] = now;
       await gelly.save();
-      const updatedBalance = await getUserPoints(usernameForPoints);
+
+      // ✅ Instantly update balance without waiting for SE delay
+      const updatedBalance = Math.max(0, userPoints - deductionAmount);
+
+      // Send updates to panel + leaderboard
       broadcastState(user, gelly);
       sendLeaderboard();
+
       return res.json({ success: true, newBalance: updatedBalance });
     }
 
