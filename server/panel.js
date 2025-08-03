@@ -2,7 +2,6 @@
 let twitchUserId = null;
 let loginName = null;
 let jellybeanBalance = 0;
-let cooldowns = {}; // Local cooldown tracker
 
 // ===== UI Elements =====
 const jellybeanBalanceEl = document.getElementById("jellybeanBalance");
@@ -12,29 +11,71 @@ const cleanlinessEl = document.getElementById("cleanliness");
 const gellyImage = document.getElementById("gelly-image");
 const leaderboardList = document.getElementById("leaderboard-list");
 const messageEl = document.getElementById("message");
+const COLOR_CHANGE_COST = 10000;
 
 // ===== Utility =====
 function showTempMessage(msg) {
-  if (!messageEl) return;
   messageEl.textContent = msg;
   setTimeout(() => (messageEl.textContent = ""), 3000);
 }
 
 function animateGelly() {
-  if (!gellyImage) return;
   gellyImage.classList.add("bounce");
   setTimeout(() => gellyImage.classList.remove("bounce"), 800);
 }
 
-function updateGellyImage(stage, color) {
+function triggerGellyAnimation(action) {
   if (!gellyImage) return;
+
+  let animationClass = "";
+  if (action === "feed") animationClass = "gelly-feed-anim";
+  else if (action === "play") animationClass = "gelly-play-anim";
+  else if (action === "clean") animationClass = "gelly-clean-anim";
+
+  if (animationClass) {
+    gellyImage.classList.add(animationClass);
+    setTimeout(() => {
+      gellyImage.classList.remove(animationClass);
+    }, 800);
+  }
+}
+function triggerColorChangeEffect() {
+  const gameContainer = document.getElementById("gelly-container");
+  if (!gameContainer) return;
+
+  // Add class to start animation
+  gameContainer.classList.add("evolution-active");
+
+  // Remove class after animation so it can trigger again next time
+  setTimeout(() => {
+    gameContainer.classList.remove("evolution-active");
+  }, 2500); // matches animation duration
+}
+
+function updateGellyImage(stage, color) {
   if (stage === "egg") {
     gellyImage.src = `assets/egg.png`;
   } else if (stage === "blob") {
-    gellyImage.src = `assets/blob_${color}.png`;
+    gellyImage.src = `assets/blob-${color}.png`;
   } else {
-    gellyImage.src = `assets/gelly_${color}.png`;
+    gellyImage.src = `assets/gelly-${color}.png`;
   }
+}
+
+function updateColorPickerButtons() {
+  const buttons = document.querySelectorAll("#color-picker button");
+  buttons.forEach(btn => {
+    btn.disabled = jellybeanBalance < COLOR_CHANGE_COST;
+  });
+}
+
+// ===== Cooldown Tracking =====
+const cooldowns = {};
+function isOnCooldown(action) {
+  return cooldowns[action] && Date.now() < cooldowns[action];
+}
+function setCooldown(action, ms) {
+  cooldowns[action] = Date.now() + ms;
 }
 
 // ===== Jellybean Balance =====
@@ -45,9 +86,8 @@ async function fetchJellybeanBalance() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     jellybeanBalance = data.points || 0;
-    if (jellybeanBalanceEl) {
-      jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
-    }
+    jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+    updateColorPickerButtons();
   } catch (err) {
     console.error("[ERROR] Failed to fetch jellybean balance:", err);
   }
@@ -55,46 +95,34 @@ async function fetchJellybeanBalance() {
 
 // ===== State Updates =====
 function updateUIFromState(state) {
-  if (energyEl) energyEl.textContent = Math.floor(state.energy);
-  if (moodEl) moodEl.textContent = Math.floor(state.mood);
-  if (cleanlinessEl) cleanlinessEl.textContent = Math.floor(state.cleanliness);
+  energyEl.textContent = Math.floor(state.energy);
+  moodEl.textContent = Math.floor(state.mood);
+  cleanlinessEl.textContent = Math.floor(state.cleanliness);
   updateGellyImage(state.stage, state.color || "blue");
 }
 
 // ===== Leaderboard =====
 function updateLeaderboard(entries) {
-  if (!leaderboardList) return;
   leaderboardList.innerHTML = "";
   entries.forEach(entry => {
     const li = document.createElement("li");
-    li.textContent = `${entry.displayName || entry.loginName}: ${entry.points}`;
+    li.textContent = `${entry.displayName || entry.loginName}: ${entry.score} care score`;
     leaderboardList.appendChild(li);
   });
-}
-
-// ===== Cooldown Check =====
-function isOnCooldown(action) {
-  const now = Date.now();
-  if (cooldowns[action] && cooldowns[action] > now) {
-    const remaining = Math.ceil((cooldowns[action] - now) / 1000);
-    showTempMessage(`Please wait ${remaining}s before ${action} again.`);
-    return true;
-  }
-  return false;
-}
-
-function setCooldown(action, ms) {
-  cooldowns[action] = Date.now() + ms;
 }
 
 // ===== Interact =====
 async function interact(action) {
   if (!twitchUserId) return;
 
-  // Match server.js cooldown rules
   const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
   const cooldownKey = action.startsWith("color:") ? "color" : action;
   const cooldownMs = ACTION_COOLDOWNS[cooldownKey] || 60000;
+
+  const button =
+    action === "feed" ? document.getElementById("feedBtn") :
+    action === "play" ? document.getElementById("playBtn") :
+    action === "clean" ? document.getElementById("cleanBtn") : null;
 
   if (isOnCooldown(cooldownKey)) return;
 
@@ -106,22 +134,45 @@ async function interact(action) {
     });
     const data = await res.json();
 
-    if (!data.success) {
-      showTempMessage(data.message || "Action failed");
-    } else {
-      animateGelly();
+   if (!data.success) {
+  showTempMessage(data.message || "Action failed");
+} else {
+  if (action === "feed" || action === "play" || action === "clean") {
+    triggerGellyAnimation(action);
+  }
+  if (action.startsWith("color:")) {
+    triggerColorChangeEffect();
+  }
 
-      // Set cooldown if success
-      setCooldown(cooldownKey, cooldownMs);
+  animateGelly();
+  setCooldown(cooldownKey, cooldownMs);
+  ...
 
-      // Instantly update jellybean balance if provided
+
+      if (button) {
+        const originalText = button.textContent;
+        let remaining = Math.floor(cooldownMs / 1000);
+        button.disabled = true;
+        button.textContent = `${originalText} (${remaining}s)`;
+        const interval = setInterval(() => {
+          remaining -= 1;
+          if (remaining > 0) {
+            button.textContent = `${originalText} (${remaining}s)`;
+          } else {
+            clearInterval(interval);
+            button.disabled = false;
+            button.textContent = originalText;
+          }
+        }, 1000);
+      }
+
       if (typeof data.newBalance === "number") {
         jellybeanBalance = data.newBalance;
-        if (jellybeanBalanceEl) {
-          jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
-        }
+        jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+        updateColorPickerButtons();
       } else {
         await fetchJellybeanBalance();
+        updateColorPickerButtons();
       }
     }
   } catch (err) {
@@ -133,16 +184,12 @@ async function interact(action) {
 function startGame() {
   const startScreen = document.getElementById("landing-page");
   const gameScreen = document.getElementById("gelly-container");
-
   if (!startScreen || !gameScreen) {
     console.error("[ERROR] Missing start or game screen element in HTML");
     return;
   }
-
   startScreen.style.display = "none";
   gameScreen.style.display = "block";
-
-  interact("startgame");
 }
 
 // ===== WebSocket =====
@@ -152,11 +199,8 @@ function connectWebSocket() {
   ws = new WebSocket(`wss://gelly-server.onrender.com?user=${twitchUserId}`);
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    if (msg.type === "update") {
-      updateUIFromState(msg.state);
-    } else if (msg.type === "leaderboard") {
-      updateLeaderboard(msg.entries);
-    }
+    if (msg.type === "update") updateUIFromState(msg.state);
+    else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
   };
 }
 
@@ -180,9 +224,22 @@ Twitch.ext.onAuthorized(async function(auth) {
 });
 
 // ===== Button Listeners =====
+document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
+document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
+document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
+document.getElementById("startGameBtn")?.addEventListener("click", startGame);
+
 document.addEventListener("DOMContentLoaded", () => {
-  document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
-  document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
-  document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
-  document.getElementById("startGameBtn")?.addEventListener("click", startGame);
+  const startGameBtn = document.getElementById("startGameBtn");
+  if (startGameBtn) {
+    startGameBtn.addEventListener("click", startGame);
+  }
+});
+
+// ===== Color Picker Listeners =====
+document.querySelectorAll("#color-picker button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const selectedColor = btn.dataset.color;
+    interact(`color:${selectedColor}`);
+  });
 });
