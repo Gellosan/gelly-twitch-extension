@@ -160,7 +160,7 @@ async function deductUserPoints(username, amount) {
       const errText = await res.text();
       console.error("[ERROR] SE bot send failed:", errText);
     } else {
-      console.log(`[DEBUG] Sent to SE bot: !points add ${username} -${Math.abs(amount)}`);
+      console.log(`[DEBUG] Sent to SE bot: !addpoints ${username} -${Math.abs(amount)}`);
     }
   } catch (err) {
     console.error("[ERROR] deductUserPoints via SE bot:", err);
