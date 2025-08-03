@@ -142,20 +142,18 @@ async function getUserPoints(username) {
 async function deductUserPoints(username, amount) {
   try {
     const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/points/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
       {
-        method: "PUT",
+        method: "POST",
         headers: {
           Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          points: -Math.abs(amount) // negative to subtract
+          message: `!addpoints ${username} -${Math.abs(amount)}`
         }),
       }
     );
-
-
 
     if (!res.ok) {
       const errText = await res.text();
