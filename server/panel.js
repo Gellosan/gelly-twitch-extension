@@ -242,9 +242,12 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // ===== Color Picker (Dropdown) =====
-document.getElementById("gellyColor").addEventListener("change", async () => {
-  const selectedColor = document.getElementById("gellyColor").value; // blue, green, pink
-  await interact(`color:${selectedColor}`); // deduct beans & save to server
-  triggerColorChangeEffect(); // sparkles
-  updateGellyImage(currentStage, selectedColor); // instant local update
+document.querySelectorAll(".color-btn").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const selectedColor = btn.dataset.color; // blue, green, pink
+    interact(`color:${selectedColor}`); // send to backend
+    triggerColorChangeEffect(); // sparkle animation
+    updateGellyImage(currentStage, selectedColor); // instant local update
+  });
 });
+
