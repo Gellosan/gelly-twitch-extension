@@ -142,15 +142,15 @@ async function getUserPoints(username) {
 async function deductUserPoints(username, amount) {
   try {
     const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/points/${"67c5724091fe00099031263f"}/${encodeURIComponent(username)}`,
+      `https://api.streamelements.com/kappa/v2/points/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       {
         method: "PUT",
         headers: {
-          Authorization: `Bearer ${"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaXRhZGVsIiwiZXhwIjoxNzU2NTQ1MDg4LCJqdGkiOiI4ZGMzNDMxZS0xZWI4LTQ3ODQtYTU1Ny0zODBhMWYyNjJlM2YiLCJjaGFubmVsIjoiNjdjNTcyNDA5MWZlMDAwOTkwMzEyNjNmIiwicm9sZSI6Im93bmVyIiwiYXV0aFRva2VuIjoiSkNVNVBZakRETzB6WFlmZ1l5T3EyTG04M3FUbjkya3B0SnJkWVg3dTZvUlRxUHhDIiwidXNlciI6IjY3YzU3MjQwOTFmZTAwMDk5MDMxMjYzZSIsInVzZXJfaWQiOiJlM2RjYjFkMy00NDNiLTQ1ODgtODQ4Ny0xMmRiYjMxZGRjOGUiLCJ1c2VyX3JvbGUiOiJjcmVhdG9yIiwicHJvdmlkZXIiOiJ0d2l0Y2giLCJwcm92aWRlcl9pZCI6IjUzMjQ0NzI1NyIsImNoYW5uZWxfaWQiOiI5YTljZGIzYy1hNDlmLTQ1OGUtODA2Zi03YjE5NGFhZTgzNzEiLCJjcmVhdG9yX2lkIjoiNTkyNTdlZjgtZDNiOS00YzNiLWFhMDMtMzMzOWU1ZDk0YTIwIn0.tYrIHGEhYfT1fxVPQayV7uRUqh52sYzJzPhhcTwB-lA"}`, // from your .env
+          Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          points: -Math.abs(amount) // negative number to subtract
+          points: -Math.abs(amount) // negative to subtract
         }),
       }
     );
@@ -165,6 +165,7 @@ async function deductUserPoints(username, amount) {
     console.error("[ERROR] deductUserPoints via SE API:", err);
   }
 }
+
 
 
     if (!res.ok) {
