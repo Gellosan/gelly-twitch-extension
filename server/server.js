@@ -141,30 +141,42 @@ async function getUserPoints(username) {
 
 async function deductUserPoints(username, amount) {
   try {
+    // 1️⃣ Get the current points from SE API
+    const currentPoints = await getUserPoints(username);
+
+    // 2️⃣ Subtract amount
+    const newBalance = Math.max(0, currentPoints - Math.abs(amount));
+
+    // 3️⃣ Update points via SE API
     const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       {
-        method: "POST",
+        method: "PUT",
         headers: {
           Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: `!addpoints ${username} -${Math.abs(amount)}`
+          points: newBalance
         }),
       }
     );
 
+    // 4️⃣ Log response
     if (!res.ok) {
       const errText = await res.text();
-      console.error("[ERROR] SE bot send failed:", errText);
+      console.error("[ERROR] Failed to update points:", errText);
     } else {
-      console.log(`[DEBUG] Sent to SE bot: !addpoints ${username} -${Math.abs(amount)}`);
+      console.log(`[DEBUG] Deducted ${amount} Jellybeans from ${username}. New balance: ${newBalance}`);
     }
+
+    return newBalance;
   } catch (err) {
-    console.error("[ERROR] deductUserPoints via SE bot:", err);
+    console.error("[ERROR] deductUserPoints:", err);
+    return null;
   }
 }
+
 
 
 
