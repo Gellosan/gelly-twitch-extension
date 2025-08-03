@@ -1,6 +1,3 @@
-// ===== Gelly Extension Panel Script =====
-let twitchUserId = null;
-let loginName = null;
 let jellybeanBalance = 0;
 
 // ===== UI Elements =====
@@ -27,11 +24,14 @@ function updateGellyImage(stage, color) {
   if (stage === "egg") {
     gellyImage.src = `assets/egg.png`;
   } else if (stage === "blob") {
-    gellyImage.src = `assets/blob_${color}.png`;
+    // Corrected to match dash filenames
+    gellyImage.src = `assets/blob-${color}.png`;
   } else {
-    gellyImage.src = `assets/gelly_${color}.png`;
+    // Gelly stage already matches dash naming
+    gellyImage.src = `assets/gelly-${color}.png`;
   }
 }
+
 
 // ===== Cooldown Tracking =====
 const cooldowns = {};
