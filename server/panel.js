@@ -250,4 +250,17 @@ document.querySelectorAll(".color-btn").forEach(btn => {
     updateGellyImage(currentStage, selectedColor); // instant local update
   });
 });
+// ===== Help Button Toggle =====
+document.getElementById("helpBtn")?.addEventListener("click", () => {
+  const helpBox = document.getElementById("help-box");
+  const helpBtn = document.getElementById("helpBtn");
+
+  if (helpBox.style.display === "none" || helpBox.style.display === "") {
+    helpBox.style.display = "block";
+    helpBtn.textContent = "Close Help";
+  } else {
+    helpBox.style.display = "none";
+    helpBtn.textContent = "Help";
+  }
+});
 
