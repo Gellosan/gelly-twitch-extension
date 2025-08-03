@@ -141,9 +141,7 @@ async function getUserPoints(username) {
 
 async function deductUserPoints(username, amount) {
   try {
-    const currentPoints = await getUserPoints(username);
-    const newBalance = Math.max(0, currentPoints - Math.abs(amount));
-
+    // Use negative number to subtract points
     const res = await fetch(
       `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
       {
@@ -153,7 +151,7 @@ async function deductUserPoints(username, amount) {
           "Content-Type": "application/json",
         },
         body: JSON.stringify({
-          message: `!points set ${username} ${newBalance}`,
+          message: `!points add ${username} -${Math.abs(amount)}`,
         }),
       }
     );
@@ -162,12 +160,13 @@ async function deductUserPoints(username, amount) {
       const errText = await res.text();
       console.error("[ERROR] SE bot send failed:", errText);
     } else {
-      console.log(`[DEBUG] Sent to SE bot: !points set ${username} ${newBalance}`);
+      console.log(`[DEBUG] Sent to SE bot: !points add ${username} -${Math.abs(amount)}`);
     }
   } catch (err) {
     console.error("[ERROR] deductUserPoints via SE bot:", err);
   }
 }
+
 
 
 // ===== API Routes =====
