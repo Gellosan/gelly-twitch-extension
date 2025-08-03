@@ -197,6 +197,8 @@ app.get("/v1/points/:username", async (req, res) => {
     res.status(500).json({ success: false, points: 0 });
   }
 });
+// Cache recent balances so we don't re-fetch from SE too soon
+const lastKnownPoints = {};
 
 app.post("/v1/interact", async (req, res) => {
   try {
@@ -221,8 +223,17 @@ app.post("/v1/interact", async (req, res) => {
 
     const usernameForPoints = gelly.loginName;
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
-    let userPoints = await getUserPoints(usernameForPoints);
-    console.log(`[DEBUG] SE returned points: ${userPoints}`);
+    let userPoints;
+
+// Use cached value if available and recent (5 seconds old or less)
+if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
+  userPoints = lastKnownPoints[usernameForPoints].points;
+  console.log(`[DEBUG] Using cached points: ${userPoints}`);
+} else {
+  userPoints = await getUserPoints(usernameForPoints);
+  console.log(`[DEBUG] SE returned points: ${userPoints}`);
+}
+
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -285,13 +296,16 @@ app.post("/v1/interact", async (req, res) => {
       await gelly.save();
 
       // ✅ Instantly update balance without waiting for SE delay
-      const updatedBalance = Math.max(0, userPoints - deductionAmount);
+      // Deduct and update cache
+const updatedBalance = Math.max(0, userPoints - deductionAmount);
+lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
 
       // Send updates to panel + leaderboard
       broadcastState(user, gelly);
       sendLeaderboard();
 
       return res.json({ success: true, newBalance: updatedBalance });
+
     }
 
     res.json({ success: false, message: "Action failed" });
