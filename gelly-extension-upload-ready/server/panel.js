@@ -1,3 +1,6 @@
+// ===== Gelly Extension Panel Script =====
+let twitchUserId = null;
+let loginName = null;
 let jellybeanBalance = 0;
 
 // ===== UI Elements =====
@@ -8,6 +11,7 @@ const cleanlinessEl = document.getElementById("cleanliness");
 const gellyImage = document.getElementById("gelly-image");
 const leaderboardList = document.getElementById("leaderboard-list");
 const messageEl = document.getElementById("message");
+const COLOR_CHANGE_COST = 10000;
 
 // ===== Utility =====
 function showTempMessage(msg) {
@@ -20,18 +24,50 @@ function animateGelly() {
   setTimeout(() => gellyImage.classList.remove("bounce"), 800);
 }
 
+function triggerGellyAnimation(action) {
+  if (!gellyImage) return;
+
+  let animationClass = "";
+  if (action === "feed") animationClass = "gelly-feed-anim";
+  else if (action === "play") animationClass = "gelly-play-anim";
+  else if (action === "clean") animationClass = "gelly-clean-anim";
+
+  if (animationClass) {
+    gellyImage.classList.add(animationClass);
+    setTimeout(() => {
+      gellyImage.classList.remove(animationClass);
+    }, 800);
+  }
+}
+function triggerColorChangeEffect() {
+  const gameContainer = document.getElementById("gelly-container");
+  if (!gameContainer) return;
+
+  // Add class to start animation
+  gameContainer.classList.add("evolution-active");
+
+  // Remove class after animation so it can trigger again next time
+  setTimeout(() => {
+    gameContainer.classList.remove("evolution-active");
+  }, 2500); // matches animation duration
+}
+
 function updateGellyImage(stage, color) {
   if (stage === "egg") {
     gellyImage.src = `assets/egg.png`;
   } else if (stage === "blob") {
-    // Corrected to match dash filenames
     gellyImage.src = `assets/blob-${color}.png`;
   } else {
-    // Gelly stage already matches dash naming
     gellyImage.src = `assets/gelly-${color}.png`;
   }
 }
 
+function updateColorPickerButtons() {
+  const buttons = document.querySelectorAll("#color-picker button");
+  buttons.forEach(btn => {
+    btn.disabled = jellybeanBalance < COLOR_CHANGE_COST;
+  });
+}
 
 // ===== Cooldown Tracking =====
 const cooldowns = {};
@@ -51,6 +87,7 @@ async function fetchJellybeanBalance() {
     const data = await res.json();
     jellybeanBalance = data.points || 0;
     jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+    updateColorPickerButtons();
   } catch (err) {
     console.error("[ERROR] Failed to fetch jellybean balance:", err);
   }
@@ -69,7 +106,7 @@ function updateLeaderboard(entries) {
   leaderboardList.innerHTML = "";
   entries.forEach(entry => {
     const li = document.createElement("li");
-    li.textContent = `${entry.displayName || entry.loginName}: ${entry.points}`;
+    li.textContent = `${entry.displayName || entry.loginName}: ${entry.score} care score`;
     leaderboardList.appendChild(li);
   });
 }
@@ -97,11 +134,20 @@ async function interact(action) {
     });
     const data = await res.json();
 
-    if (!data.success) {
-      showTempMessage(data.message || "Action failed");
-    } else {
-      animateGelly();
-      setCooldown(cooldownKey, cooldownMs);
+   if (!data.success) {
+  showTempMessage(data.message || "Action failed");
+} else {
+  if (action === "feed" || action === "play" || action === "clean") {
+    triggerGellyAnimation(action);
+  }
+  if (action.startsWith("color:")) {
+    triggerColorChangeEffect();
+  }
+
+  animateGelly();
+  setCooldown(cooldownKey, cooldownMs);
+  ...
+
 
       if (button) {
         const originalText = button.textContent;
@@ -123,8 +169,10 @@ async function interact(action) {
       if (typeof data.newBalance === "number") {
         jellybeanBalance = data.newBalance;
         jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+        updateColorPickerButtons();
       } else {
         await fetchJellybeanBalance();
+        updateColorPickerButtons();
       }
     }
   } catch (err) {
@@ -186,4 +234,12 @@ document.addEventListener("DOMContentLoaded", () => {
   if (startGameBtn) {
     startGameBtn.addEventListener("click", startGame);
   }
+});
+
+// ===== Color Picker Listeners =====
+document.querySelectorAll("#color-picker button").forEach(btn => {
+  btn.addEventListener("click", () => {
+    const selectedColor = btn.dataset.color;
+    interact(`color:${selectedColor}`);
+  });
 });
