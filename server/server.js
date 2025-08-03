@@ -1,201 +1,3 @@
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-const WebSocket = require("ws");
-require("dotenv").config();
-const Gelly = require("./Gelly.js");
-
-mongoose
-  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch((err) => console.error("❌ Mongo Error:", err));
-
-const app = express();
-app.use(express.json());
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      if (!origin) return callback(null, true);
-      const hostname = new URL(origin).hostname;
-      if (
-        /\.ext-twitch\.tv$/.test(hostname) ||
-        /\.twitch\.tv$/.test(hostname) ||
-        hostname === "localhost" ||
-        hostname === "127.0.0.1"
-      ) {
-        return callback(null, true);
-      }
-      console.warn(`🚫 CORS blocked origin: ${origin}`);
-      callback(new Error("CORS not allowed"));
-    },
-    methods: ["GET", "POST", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
-    credentials: true,
-  })
-);
-app.options("*", cors());
-
-// ===== WebSocket Setup =====
-const server = require("http").createServer(app);
-const wss = new WebSocket.Server({ server });
-const clients = new Map();
-
-wss.on("connection", (ws, req) => {
-  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const userId = searchParams.get("user");
-
-  if (userId) {
-    clients.set(userId, ws);
-    console.log(`🔌 WebSocket connected for user: ${userId}`);
-  }
-
-  ws.on("close", () => {
-    if (userId) {
-      clients.delete(userId);
-      console.log(`❌ WebSocket disconnected for user: ${userId}`);
-    }
-  });
-});
-
-function broadcastState(userId, gelly) {
-  const ws = clients.get(userId);
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
-  }
-}
-
-async function sendLeaderboard() {
-  let gellys = await Gelly.find();
-
-  // Apply decay to all and save
-  for (let g of gellys) {
-    if (typeof g.applyDecay === "function") {
-      g.applyDecay();
-      await g.save();
-    }
-  }
-
-  // Create care score
-  const leaderboard = gellys.map(g => ({
-    displayName: g.displayName || g.loginName || "Unknown",
-    loginName: g.loginName || "unknown",
-    score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0))
-  }));
-
-  // Sort by score
-  leaderboard.sort((a, b) => b.score - a.score);
-
-  // Top 10 only
-  const top10 = leaderboard.slice(0, 10);
-
-  // Send leaderboard to all clients
-  const data = JSON.stringify({ type: "leaderboard", entries: top10 });
-  for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
-  }
-}
-
-
-// ===== Helpers =====
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
-const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
-const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
-
-async function fetchTwitchUserData(userId) {
-  try {
-    const cleanId = userId.startsWith("U") ? userId.substring(1) : userId;
-    const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
-      headers: {
-        "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`,
-      },
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    const user = data?.data?.[0];
-    return user ? { displayName: user.display_name, loginName: user.login } : null;
-  } catch {
-    return null;
-  }
-}
-
-// ===== StreamElements API =====
-const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
-const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
-const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
-
-async function getUserPoints(username) {
-  try {
-    const res = await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
-      { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
-    );
-    if (!res.ok) return 0;
-    const data = await res.json();
-    return data?.points || 0;
-  } catch {
-    return 0;
-  }
-}
-
-async function deductUserPoints(username, amount) {
-  try {
-    // Use negative number to subtract points
-    const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${process.env.STREAMELEMENTS_JWT}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          message: `!addpoints ${username} -${Math.abs(amount)}`,
-        }),
-      }
-    );
-
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("[ERROR] SE bot send failed:", errText);
-    } else {
-      console.log(`[DEBUG] Sent to SE bot: !addpoints ${username} -${Math.abs(amount)}`);
-    }
-  } catch (err) {
-    console.error("[ERROR] deductUserPoints via SE bot:", err);
-  }
-}
-
-
-
-// ===== API Routes =====
-app.get("/v1/state/:userId", async (req, res) => {
-  try {
-    const { userId } = req.params;
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
-    if (typeof gelly.applyDecay === "function") {
-      gelly.applyDecay();
-      await gelly.save();
-    }
-
-    res.json({ success: true, state: gelly });
-  } catch {
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-
-app.get("/v1/points/:username", async (req, res) => {
-  try {
-    const points = await getUserPoints(req.params.username);
-    res.json({ success: true, points });
-  } catch {
-    res.status(500).json({ success: false, points: 0 });
-  }
-});
 // Cache recent balances so we don't re-fetch from SE too soon
 const lastKnownPoints = {};
 
@@ -224,15 +26,14 @@ app.post("/v1/interact", async (req, res) => {
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints}`);
     let userPoints;
 
-// Use cached value if available and recent (5 seconds old or less)
-if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
-  userPoints = lastKnownPoints[usernameForPoints].points;
-  console.log(`[DEBUG] Using cached points: ${userPoints}`);
-} else {
-  userPoints = await getUserPoints(usernameForPoints);
-  console.log(`[DEBUG] SE returned points: ${userPoints}`);
-}
-
+    // Use cached value if available and recent (5 seconds old or less)
+    if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[usernameForPoints].time < 5000)) {
+      userPoints = lastKnownPoints[usernameForPoints].points;
+      console.log(`[DEBUG] Using cached points: ${userPoints}`);
+    } else {
+      userPoints = await getUserPoints(usernameForPoints);
+      console.log(`[DEBUG] SE returned points: ${userPoints}`);
+    }
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
@@ -295,16 +96,14 @@ if (lastKnownPoints[usernameForPoints] && (Date.now() - lastKnownPoints[username
       await gelly.save();
 
       // ✅ Instantly update balance without waiting for SE delay
-      // Deduct and update cache
-const updatedBalance = Math.max(0, userPoints - deductionAmount);
-lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
+      const updatedBalance = Math.max(0, userPoints - deductionAmount);
+      lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() };
 
       // Send updates to panel + leaderboard
       broadcastState(user, gelly);
       sendLeaderboard();
 
       return res.json({ success: true, newBalance: updatedBalance });
-
     }
 
     res.json({ success: false, message: "Action failed" });
@@ -314,8 +113,3 @@ lastKnownPoints[usernameForPoints] = { points: updatedBalance, time: Date.now() 
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
-
-
-const PORT = process.env.PORT || 10000;
-server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
