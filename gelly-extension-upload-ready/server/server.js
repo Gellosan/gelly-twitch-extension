@@ -250,17 +250,22 @@ app.post("/v1/interact", async (req, res) => {
       actionSucceeded = true;
 
     // ===== COLOR CHANGE =====
-    } else if (action.startsWith("color:")) {
-      if (userPoints < 10000) {
-        return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      }
-      const beforePoints = userPoints;
-      await deductUserPoints(usernameForPoints, 10000);
-      await new Promise(r => setTimeout(r, 2000));
-      userPoints = await getUserPoints(usernameForPoints);
-      console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
-      gelly.color = action.split(":")[1] || "blue";
-      actionSucceeded = true;
+   } else if (action.startsWith("color:")) {
+  if (userPoints < 10000) {
+    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+  }
+  const beforePoints = userPoints;
+  await deductUserPoints(usernameForPoints, 10000);
+  await new Promise(r => setTimeout(r, 2000));
+  userPoints = await getUserPoints(usernameForPoints);
+
+  console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
+
+  // Always save, even if same color
+  gelly.color = action.split(":")[1] || "blue";
+
+  actionSucceeded = true;
+}
 
     // ===== PLAY =====
     } else if (action === "play") {
