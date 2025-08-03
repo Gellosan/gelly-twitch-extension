@@ -134,51 +134,56 @@ async function interact(action) {
     });
     const data = await res.json();
 
-   if (!data.success) {
-  showTempMessage(data.message || "Action failed");
-} else {
-  if (action === "feed" || action === "play" || action === "clean") {
-    triggerGellyAnimation(action);
-  }
-  if (action.startsWith("color:")) {
-    triggerColorChangeEffect();
-  }
-
-  animateGelly();
-  setCooldown(cooldownKey, cooldownMs);
-  ...
-
-
-      if (button) {
-        const originalText = button.textContent;
-        let remaining = Math.floor(cooldownMs / 1000);
-        button.disabled = true;
-        button.textContent = `${originalText} (${remaining}s)`;
-        const interval = setInterval(() => {
-          remaining -= 1;
-          if (remaining > 0) {
-            button.textContent = `${originalText} (${remaining}s)`;
-          } else {
-            clearInterval(interval);
-            button.disabled = false;
-            button.textContent = originalText;
-          }
-        }, 1000);
-      }
-
-      if (typeof data.newBalance === "number") {
-        jellybeanBalance = data.newBalance;
-        jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
-        updateColorPickerButtons();
-      } else {
-        await fetchJellybeanBalance();
-        updateColorPickerButtons();
-      }
+    if (!data.success) {
+      showTempMessage(data.message || "Action failed");
+      return;
     }
+
+    // Trigger animations
+    if (action === "feed" || action === "play" || action === "clean") {
+      triggerGellyAnimation(action);
+    }
+    if (action.startsWith("color:")) {
+      triggerColorChangeEffect();
+    }
+    animateGelly();
+
+    // Start cooldown
+    setCooldown(cooldownKey, cooldownMs);
+
+    // Cooldown button text countdown
+    if (button) {
+      const originalText = button.textContent;
+      let remaining = Math.floor(cooldownMs / 1000);
+      button.disabled = true;
+      button.textContent = `${originalText} (${remaining}s)`;
+      const interval = setInterval(() => {
+        remaining -= 1;
+        if (remaining > 0) {
+          button.textContent = `${originalText} (${remaining}s)`;
+        } else {
+          clearInterval(interval);
+          button.disabled = false;
+          button.textContent = originalText;
+        }
+      }, 1000);
+    }
+
+    // Update jellybean balance
+    if (typeof data.newBalance === "number") {
+      jellybeanBalance = data.newBalance;
+      jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+      updateColorPickerButtons();
+    } else {
+      await fetchJellybeanBalance();
+      updateColorPickerButtons();
+    }
+
   } catch (err) {
     console.error("[ERROR] interact() failed:", err);
   }
 }
+
 
 // ===== Start Game =====
 function startGame() {
