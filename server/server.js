@@ -155,17 +155,6 @@ async function deductUserPoints(username, amount) {
       }
     );
 
-    if (!res.ok) {
-      const errText = await res.text();
-      console.error("[ERROR] Failed to deduct points via SE API:", errText);
-    } else {
-      console.log(`[DEBUG] Deducted ${amount} Jellybeans from ${username} via SE API`);
-    }
-  } catch (err) {
-    console.error("[ERROR] deductUserPoints via SE API:", err);
-  }
-}
-
 
 
     if (!res.ok) {
