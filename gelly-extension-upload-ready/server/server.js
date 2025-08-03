@@ -128,11 +128,14 @@ async function deductUserPoints(username, amount) {
           Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ points: -Math.abs(amount) }),
+        body: JSON.stringify({ amount: -Math.abs(amount) }), // <-- FIX
       }
     );
-  } catch {}
+  } catch (err) {
+    console.error("[ERROR] deductUserPoints:", err);
+  }
 }
+
 
 // ===== API Routes =====
 app.get("/v1/state/:userId", async (req, res) => {
