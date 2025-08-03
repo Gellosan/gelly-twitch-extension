@@ -65,15 +65,36 @@ function broadcastState(userId, gelly) {
 }
 
 async function sendLeaderboard() {
-  const leaderboard = await Gelly.find()
-    .sort({ points: -1, mood: -1, energy: -1, cleanliness: -1 })
-    .limit(10)
-    .lean();
-  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+  let gellys = await Gelly.find();
+
+  // Apply decay to all and save
+  for (let g of gellys) {
+    if (typeof g.applyDecay === "function") {
+      g.applyDecay();
+      await g.save();
+    }
+  }
+
+  // Create care score
+  const leaderboard = gellys.map(g => ({
+    displayName: g.displayName || g.loginName || "Unknown",
+    loginName: g.loginName || "unknown",
+    score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0))
+  }));
+
+  // Sort by score
+  leaderboard.sort((a, b) => b.score - a.score);
+
+  // Top 10 only
+  const top10 = leaderboard.slice(0, 10);
+
+  // Send leaderboard to all clients
+  const data = JSON.stringify({ type: "leaderboard", entries: top10 });
   for (const [, ws] of clients) {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
+
 
 // ===== Helpers =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
@@ -156,14 +177,17 @@ app.get("/v1/state/:userId", async (req, res) => {
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
 
-    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
-    await gelly.save();
+    if (typeof gelly.applyDecay === "function") {
+      gelly.applyDecay();
+      await gelly.save();
+    }
 
     res.json({ success: true, state: gelly });
   } catch {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 app.get("/v1/points/:username", async (req, res) => {
   try {
@@ -221,15 +245,23 @@ app.post("/v1/interact", async (req, res) => {
       console.log(`[DEBUG] Feed points change: ${beforePoints} -> ${userPoints}`);
       gelly.energy = Math.min(500, gelly.energy + 20);
       actionSucceeded = true;
-    } else if (action.startsWith("color:")) {
-      if (userPoints < 5000) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      const beforePoints = userPoints;
-      await deductUserPoints(usernameForPoints, 5000);
-      await new Promise(r => setTimeout(r, 2000));
-      userPoints = await getUserPoints(usernameForPoints);
-      console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
-      gelly.color = action.split(":")[1] || "blue";
-      actionSucceeded = true;
+   } else if (action.startsWith("color:")) {
+  if (userPoints < 10000) {
+    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+  }
+
+  const beforePoints = userPoints;
+  await deductUserPoints(usernameForPoints, 10000); // now costs 10,000
+  await new Promise(r => setTimeout(r, 2000));
+  userPoints = await getUserPoints(usernameForPoints);
+
+  console.log(`[DEBUG] Color change points: ${beforePoints} -> ${userPoints}`);
+
+  // Apply new color
+  gelly.color = action.split(":")[1] || "blue";
+  actionSucceeded = true;
+}
+
     } else if (action === "play") {
       gelly.mood = Math.min(500, gelly.mood + 20);
       actionSucceeded = true;
