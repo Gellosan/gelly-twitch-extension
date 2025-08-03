@@ -2,6 +2,7 @@
 let twitchUserId = null;
 let loginName = null;
 let jellybeanBalance = 0;
+let currentStage = "egg"; // remember current Gelly stage
 
 // ===== UI Elements =====
 const jellybeanBalanceEl = document.getElementById("jellybeanBalance");
@@ -39,17 +40,15 @@ function triggerGellyAnimation(action) {
     }, 800);
   }
 }
+
 function triggerColorChangeEffect() {
   const gameContainer = document.getElementById("gelly-container");
   if (!gameContainer) return;
 
-  // Add class to start animation
   gameContainer.classList.add("evolution-active");
-
-  // Remove class after animation so it can trigger again next time
   setTimeout(() => {
     gameContainer.classList.remove("evolution-active");
-  }, 2500); // matches animation duration
+  }, 2500);
 }
 
 function updateGellyImage(stage, color) {
@@ -63,10 +62,11 @@ function updateGellyImage(stage, color) {
 }
 
 function updateColorPickerButtons() {
-  const buttons = document.querySelectorAll("#color-picker button");
-  buttons.forEach(btn => {
-    btn.disabled = jellybeanBalance < COLOR_CHANGE_COST;
-  });
+  // Disable color change if not enough jellybeans
+  const colorSelect = document.getElementById("gellyColor");
+  if (colorSelect) {
+    colorSelect.disabled = jellybeanBalance < COLOR_CHANGE_COST;
+  }
 }
 
 // ===== Cooldown Tracking =====
@@ -95,6 +95,7 @@ async function fetchJellybeanBalance() {
 
 // ===== State Updates =====
 function updateUIFromState(state) {
+  currentStage = state.stage; // store current stage
   energyEl.textContent = Math.floor(state.energy);
   moodEl.textContent = Math.floor(state.mood);
   cleanlinessEl.textContent = Math.floor(state.cleanliness);
@@ -184,7 +185,6 @@ async function interact(action) {
   }
 }
 
-
 // ===== Start Game =====
 function startGame() {
   const startScreen = document.getElementById("landing-page");
@@ -228,7 +228,7 @@ Twitch.ext.onAuthorized(async function(auth) {
   connectWebSocket();
 });
 
-// ===== Button Listeners =====
+// ===== Action Buttons =====
 document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
 document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
 document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
@@ -241,10 +241,10 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 
-// ===== Color Picker Listeners =====
-document.querySelectorAll("#color-picker button").forEach(btn => {
-  btn.addEventListener("click", () => {
-    const selectedColor = btn.dataset.color;
-    interact(`color:${selectedColor}`);
-  });
+// ===== Color Picker (Dropdown) =====
+document.getElementById("gellyColor").addEventListener("change", async () => {
+  const selectedColor = document.getElementById("gellyColor").value; // blue, green, pink
+  await interact(`color:${selectedColor}`); // deduct beans & save to server
+  triggerColorChangeEffect(); // sparkles
+  updateGellyImage(currentStage, selectedColor); // instant local update
 });
