@@ -369,3 +369,8 @@ app.post("/v1/admin/reset-leaderboard", async (req, res) => {
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
+// Simple ping endpoint to keep server awake
+app.get("/ping", (req, res) => {
+    res.json({ success: true, message: "Server is awake" });
+});
