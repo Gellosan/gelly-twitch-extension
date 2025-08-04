@@ -222,6 +222,10 @@ app.get("/v1/state/:userId", async (req, res) => {
     }
 
     await gelly.save();
+
+    // Send instant update
+    broadcastState(userId, gelly);
+
     res.json({ success: true, state: gelly });
   } catch {
     res.status(500).json({ success: false, message: "Server error" });
@@ -337,7 +341,12 @@ app.post("/v1/interact", async (req, res) => {
       broadcastState(user, gelly);
       sendLeaderboard();
 
-      return res.json({ success: true, newBalance: userPoints });
+      // Return full updated state so panel updates instantly
+      return res.json({ 
+        success: true, 
+        newBalance: userPoints, 
+        state: gelly 
+      });
     }
 
   } catch (err) {
