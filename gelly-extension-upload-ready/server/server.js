@@ -5,6 +5,19 @@ const WebSocket = require("ws");
 require("dotenv").config();
 const Gelly = require("./Gelly.js");
 const app = express();
+const tmi = require("tmi.js");
+
+const twitchClient = new tmi.Client({
+  identity: {
+    username: process.env.TWITCH_BOT_USERNAME,
+    password: process.env.TWITCH_OAUTH_TOKEN
+  },
+  channels: [process.env.TWITCH_CHANNEL_NAME]
+});
+
+twitchClient.connect().then(() =>
+  console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME)
+).catch(console.error);
 
 mongoose
   .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
@@ -150,38 +163,25 @@ async function getUserPoints(username) {
   }
 }
 
+// Fetch → compute → send !setpoints via IRC
 async function deductUserPoints(username, amount) {
   try {
     const current = await getUserPoints(username);
-
-    if (current === null) {
-      console.warn(`[SE] Skipping deduction for ${username} — current points unavailable`);
-      return null;
-    }
+    if (current === null) return null;
 
     const newTotal = Math.max(0, current - Math.abs(amount));
 
-    const res = await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
-      {
-        method: "PUT",
-        headers: {
-          "Authorization": `Bearer ${STREAM_ELEMENTS_JWT}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify({ points: newTotal })
-      }
-    );
+    // Send the command as broadcaster
+    const cmd = `!setpoints ${username} ${newTotal}`;
+    console.log("[IRC] →", cmd);
+    twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
 
-    if (!res.ok) {
-      console.error("[SE] PUT failed:", await res.text());
-      return null;
-    }
+    // give WSE a moment to process (optional)
+    await new Promise(r => setTimeout(r, 1500));
 
-    console.log(`[SE] ${username}: ${current} ➜ ${newTotal} (-${amount})`);
     return newTotal;
   } catch (err) {
-    console.error("[SE] deduct error:", err);
+    console.error("[deductUserPoints] error:", err);
     return null;
   }
 }
