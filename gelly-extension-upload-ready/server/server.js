@@ -202,22 +202,21 @@ async function sendLeaderboard() {
 // ===== API Routes =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
-    let { userId } = req.params;
+    // Try JWT first
+    const twitchId = getRealTwitchId(req.headers.authorization) || req.params.userId;
 
-    // ✅ Decode real Twitch ID from JWT
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
+    let gelly = await Gelly.findOne({ userId: twitchId });
+    if (!gelly) gelly = new Gelly({ userId: twitchId, points: 0 });
 
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
+    // Always fetch Twitch name if missing or unknown
     if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
-      const twitchData = await fetchTwitchUserData(userId);
+      const twitchData = await fetchTwitchUserData(twitchId);
       if (twitchData) {
         gelly.displayName = twitchData.displayName;
         gelly.loginName = twitchData.loginName;
+      } else {
+        gelly.displayName = "Unknown";
+        gelly.loginName = "unknown";
       }
       await gelly.save();
     }
@@ -228,17 +227,9 @@ app.get("/v1/state/:userId", async (req, res) => {
     await gelly.save();
 
     res.json({ success: true, state: gelly });
-  } catch {
+  } catch (err) {
+    console.error("[ERROR] /v1/state:", err);
     res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-
-app.get("/v1/points/:username", async (req, res) => {
-  try {
-    const points = await getUserPoints(req.params.username);
-    res.json({ success: true, points });
-  } catch {
-    res.status(500).json({ success: false, points: 0 });
   }
 });
 
@@ -246,21 +237,18 @@ app.post("/v1/interact", async (req, res) => {
   try {
     let { user, action } = req.body;
 
-    // ✅ Decode real Twitch ID from JWT
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) user = realId;
-    }
+    // Try JWT first
+    const twitchId = getRealTwitchId(req.headers.authorization) || user;
+    if (!twitchId) return res.json({ success: false, message: "Missing user ID" });
 
-    if (!user) return res.json({ success: false, message: "Missing user ID" });
-
-    let gelly = await Gelly.findOne({ userId: user });
-    if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
+    let gelly = await Gelly.findOne({ userId: twitchId });
+    if (!gelly) gelly = new Gelly({ userId: twitchId, points: 0 });
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
+    // Always resolve Twitch name first
     if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
-      const twitchData = await fetchTwitchUserData(user);
+      const twitchData = await fetchTwitchUserData(twitchId);
       if (twitchData) {
         gelly.displayName = twitchData.displayName;
         gelly.loginName = twitchData.loginName;
@@ -288,6 +276,7 @@ app.post("/v1/interact", async (req, res) => {
     let actionSucceeded = false;
     let deductionAmount = 0;
 
+    // ===== FEED =====
     if (action === "feed") {
       deductionAmount = 1000;
       if (userPoints < deductionAmount)
@@ -301,6 +290,7 @@ app.post("/v1/interact", async (req, res) => {
       gelly.energy = Math.min(500, gelly.energy + 20);
       actionSucceeded = true;
 
+    // ===== COLOR CHANGE =====
     } else if (action.startsWith("color:")) {
       deductionAmount = 10000;
       if (userPoints < deductionAmount)
@@ -314,27 +304,24 @@ app.post("/v1/interact", async (req, res) => {
       gelly.color = action.split(":")[1] || "blue";
       actionSucceeded = true;
 
+    // ===== PLAY =====
     } else if (action === "play") {
       gelly.mood = Math.min(500, gelly.mood + 20);
       actionSucceeded = true;
 
+    // ===== CLEAN =====
     } else if (action === "clean") {
       gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
       actionSucceeded = true;
 
+    // ===== START GAME =====
     } else if (action === "startgame") {
-      const twitchData = await fetchTwitchUserData(user);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      }
       gelly.points = 0;
       gelly.energy = 100;
       gelly.mood = 100;
       gelly.cleanliness = 100;
       gelly.lastUpdated = new Date();
       actionSucceeded = true;
-
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
@@ -342,19 +329,18 @@ app.post("/v1/interact", async (req, res) => {
     if (actionSucceeded) {
       gelly.lastActionTimes[cooldownKey] = now;
       await gelly.save();
-
-      broadcastState(user, gelly);
+      broadcastState(twitchId, gelly);
       sendLeaderboard();
       return res.json({ success: true, newBalance: userPoints });
     }
 
     res.json({ success: false, message: "Action failed" });
-
   } catch (err) {
     console.error("[ERROR] /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
