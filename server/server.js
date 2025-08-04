@@ -91,6 +91,16 @@ async function sendLeaderboard() {
       g.applyDecay();
       await g.save();
     }
+
+    // Ensure we have proper Twitch displayName/loginName for leaderboard
+    if (!g.displayName || !g.loginName || g.displayName === "Unknown" || g.loginName === "unknown") {
+      const twitchData = await fetchTwitchUserData(g.userId);
+      if (twitchData) {
+        g.displayName = twitchData.displayName;
+        g.loginName = twitchData.loginName;
+        await g.save();
+      }
+    }
   }
 
   // Create care score
@@ -112,6 +122,7 @@ async function sendLeaderboard() {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
+
 
 
 // ===== Helpers =====
