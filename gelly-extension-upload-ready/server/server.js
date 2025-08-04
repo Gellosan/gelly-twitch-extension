@@ -280,7 +280,6 @@ if (action === "feed") {
       gelly.cleanliness = 100;
       gelly.lastUpdated = new Date();
       actionSucceeded = true;
-}
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
