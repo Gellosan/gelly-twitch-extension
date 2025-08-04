@@ -63,7 +63,6 @@ wss.on("connection", (ws, req) => {
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected for user: ${userId}`);
-
     sendLeaderboard().catch(console.error);
   }
 
@@ -160,88 +159,47 @@ const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 
 async function getUserPoints(username) {
   try {
-    if (!username || username === "guest" || username === "unknown") return 0; // skip guests
+    if (!username || username === "guest" || username === "unknown") return 0;
     const res = await fetch(
       `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
     );
 
     if (!res.ok) {
-
       console.error("[SE] getUserPoints failed:", await res.text());
-
-      return null; // don't return 0 on failure
-
-    };
+      return null;
+    }
     const data = await res.json();
     return typeof data?.points === "number" ? data.points : null;
-  } catch {
-    return null;
-  }
-}
- return data.points;
-
-   catch (err) {
-
+  } catch (err) {
     console.error("[SE] getUserPoints error:", err);
-
     return null;
-
   }
-
 }
-
-
-
-// Fetch → compute → send !setpoints via IRC
 
 async function deductUserPoints(username, amount) {
-
   try {
-
     const current = await getUserPoints(username);
-
     if (current === null) return null;
-
-
 
     const newTotal = Math.max(0, current - Math.abs(amount));
 
-
-
-    // Send the command as broadcaster
-
     const cmd = `!setpoints ${username} ${newTotal}`;
-
     console.log("[IRC] →", cmd);
-
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
 
-
-
-    // give WSE a moment to process (optional)
-
     await new Promise(r => setTimeout(r, 1500));
-
-
-
     return newTotal;
-
   } catch (err) {
-
     console.error("[deductUserPoints] error:", err);
-
-if (req.headers.authorization) {
-  const realId = getRealTwitchId(req.headers.authorization);
-  if (realId) userId = realId; // overwrite opaque ID with real numeric Twitch ID
+    return null;
+  }
 }
-
 
 // ===== API Routes =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     let { userId } = req.params;
-
     if (req.headers.authorization) {
       const realId = getRealTwitchId(req.headers.authorization);
       if (realId) userId = realId;
@@ -269,30 +227,19 @@ app.get("/v1/state/:userId", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 app.get("/v1/points/:username", async (req, res) => {
-
   try {
-
     const points = await getUserPoints(req.params.username);
-
     res.json({ success: true, points });
-
   } catch {
-
     res.status(500).json({ success: false, points: 0 });
-
   }
-
 });
-
-// Cache recent balances so we don't re-fetch from SE too soon
-
-const lastKnownPoints = {};
 
 app.post("/v1/interact", async (req, res) => {
   try {
     let { user, action } = req.body;
-
     if (req.headers.authorization) {
       const realId = getRealTwitchId(req.headers.authorization);
       if (realId) user = realId;
@@ -316,167 +263,80 @@ app.post("/v1/interact", async (req, res) => {
       }
     }
 
-    await gelly.save();
-onst usernameForPoints = gelly.loginName;
-
+    const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
-
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints} | Current points: ${userPoints}`);
 
-
-
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
-
     const cooldownKey = action.startsWith("color:") ? "color" : action;
-
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
-
     const now = new Date();
 
-
-
     if (gelly.lastActionTimes[cooldownKey] && now - gelly.lastActionTimes[cooldownKey] < cooldown) {
-
       const remaining = Math.ceil((cooldown - (now - gelly.lastActionTimes[cooldownKey])) / 1000);
-
       return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
-
     }
 
-
-
     let actionSucceeded = false;
-
     let deductionAmount = 0;
 
+    if (action === "feed") {
+      deductionAmount = 1000;
+      if (userPoints < deductionAmount)
+        return res.json({ success: false, message: "Not enough Jellybeans to feed." });
 
+      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      if (newBal === null)
+        return res.json({ success: false, message: "Point deduction failed. Try again." });
 
-   // ===== FEED =====
+      userPoints = newBal;
+      gelly.energy = Math.min(500, gelly.energy + 20);
+      actionSucceeded = true;
 
-if (action === "feed") {
+    } else if (action.startsWith("color:")) {
+      deductionAmount = 10000;
+      if (userPoints < deductionAmount)
+        return res.json({ success: false, message: "Not enough Jellybeans to change color." });
 
-  deductionAmount = 1000;
+      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      if (newBal === null)
+        return res.json({ success: false, message: "Point deduction failed. Try again." });
 
-  if (userPoints < deductionAmount)
-
-    return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-
-
-
-  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
-
-  if (newBal === null)            // SE failure
-
-    return res.json({ success: false, message: "Point deduction failed. Try again." });
-
-
-
-  userPoints = newBal;            // update running balance
-
-  gelly.energy = Math.min(500, gelly.energy + 20);
-
-  actionSucceeded = true;
-
-
-
-// ===== COLOR CHANGE =====
-
-} else if (action.startsWith("color:")) {
-
-  deductionAmount = 10000;
-
-  if (userPoints < deductionAmount)
-
-    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-
-
-
-  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
-
-  if (newBal === null)
-
-    return res.json({ success: false, message: "Point deduction failed. Try again." });
-
-
-
-  userPoints = newBal;
-
-  gelly.color = action.split(":")[1] || "blue";
-
-  actionSucceeded = true;
-
-
-
-
-
-    // ===== PLAY =====
+      userPoints = newBal;
+      gelly.color = action.split(":")[1] || "blue";
+      actionSucceeded = true;
 
     } else if (action === "play") {
-
       gelly.mood = Math.min(500, gelly.mood + 20);
-
       actionSucceeded = true;
-
-
-
-    // ===== CLEAN =====
 
     } else if (action === "clean") {
-
       gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
-
       actionSucceeded = true;
 
-
-
-    // ===== START GAME =====
-
     } else if (action === "startgame") {
-
       gelly.points = 0;
-
       gelly.energy = 100;
-
       gelly.mood = 100;
-
       gelly.cleanliness = 100;
-
       gelly.lastUpdated = new Date();
-
       actionSucceeded = true;
 
     } else {
-
       return res.json({ success: false, message: "Unknown action" });
-
     }
 
+    if (actionSucceeded) {
+      gelly.lastActionTimes[cooldownKey] = now;
+      await gelly.save();
 
+      broadcastState(user, gelly);
+      sendLeaderboard();
 
-   if (actionSucceeded) {
+      return res.json({ success: true, newBalance: userPoints });
+    }
 
-  gelly.lastActionTimes[cooldownKey] = now;
-
-  await gelly.save();
-
-
-
-  const updatedBalance = userPoints;   // already the confirmed new total
-
-  broadcastState(user, gelly);
-
-  sendLeaderboard();
-
-
-
-  return res.json({ success: true, newBalance: updatedBalance });
-
-}
-
-    broadcastState(user, gelly);
-    sendLeaderboard();
-
-    res.json({ success: true, newBalance: await getUserPoints(gelly.loginName) });
+    res.json({ success: false, message: "Action failed" });
   } catch (err) {
     console.error("[ERROR] /v1/interact:", err);
     res.status(500).json({ success: false, message: "Server error" });
