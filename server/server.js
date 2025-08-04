@@ -354,6 +354,173 @@ app.post("/v1/interact", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+// ===== GET Inventory =====
+app.get("/v1/state/:userId", async (req, res) => {
+  try {
+    let { userId } = req.params;
+    if (req.headers.authorization) {
+      const realId = getRealTwitchId(req.headers.authorization);
+      if (realId) userId = realId;
+    }
+
+    let gelly = await Gelly.findOne({ userId });
+    if (!gelly) gelly = new Gelly({ userId, points: 0 });
+
+    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
+
+    if (!userId || userId.startsWith("U")) {
+      gelly.displayName = "Guest Viewer";
+      gelly.loginName = "guest";
+    } else {
+      const twitchData = await fetchTwitchUserData(userId);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      }
+    }
+
+    // Ensure inventory exists
+    if (!Array.isArray(gelly.inventory)) {
+      gelly.inventory = [];
+    }
+
+    await gelly.save();
+
+    // Send instant update
+    broadcastState(userId, gelly);
+
+    res.json({
+      success: true,
+      state: {
+        ...gelly.toObject(),
+        inventory: gelly.inventory // always include inventory
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
+
+// ===== Buy Item =====
+app.post("/v1/inventory/buy", async (req, res) => {
+    try {
+        const { itemId, name, type, cost, currency, transactionId } = req.body;
+        let { userId } = req.body;
+
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        const gelly = await Gelly.findOne({ userId });
+        if (!gelly) return res.status(404).json({ success: false, message: "Player not found" });
+
+        if (currency === "jellybeans") {
+            // Existing Jellybean logic
+            const usernameForPoints = gelly.loginName;
+            let userPoints = await getUserPoints(usernameForPoints);
+            if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans" });
+
+            const newBal = await deductUserPoints(usernameForPoints, cost);
+            if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
+
+        } else if (currency === "bits") {
+            // Verify Twitch Bits transaction
+            const valid = await verifyBitsTransaction(transactionId, userId);
+            if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
+        } else {
+            return res.json({ success: false, message: "Invalid currency type" });
+        }
+
+        // Add to inventory
+        gelly.inventory.push({ itemId, name, type, equipped: false });
+        await gelly.save();
+
+        res.json({ success: true, inventory: gelly.inventory });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    }
+});
+async function verifyBitsTransaction(transactionId, userId) {
+    try {
+        const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?id=${transactionId}`, {
+            headers: {
+                "Client-ID": process.env.TWITCH_CLIENT_ID,
+                "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
+            }
+        });
+
+        if (!res.ok) {
+            console.error("Bits verification API failed", await res.text());
+            return false;
+        }
+
+        const data = await res.json();
+        const tx = data.data && data.data[0];
+
+        return tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION";
+    } catch (err) {
+        console.error("verifyBitsTransaction error:", err);
+        return false;
+    }
+}
+// ===== Example Store Config =====
+const storeItems = [
+    { id: "chain", name: "Gold chain", type: "accessory", cost: 300000, currency: "jellybeans" },
+    { id: "party-hat", name: "Party Hat", type: "hat", cost: 300000, currency: "jellybeans" },
+    { id: "sunglasses", name: "Sunglasses", type: "accessory", cost: 100000, currency: "jellybeans" },
+    { id: "wizard-hat", name: "Wizard Hat", type: "hat", cost: 500000, currency: "jellybeans" },
+    { id: "flower-crown", name: "Flower Crown", type: "hat", cost: 500000, currency: "jellybeans" },
+    { id: "bat", name: "Baseball Bat", type: "weapon", cost: 500000, currency: "jellybeans" },
+    { id: "gold-crown", name: "Gold Crown", type: "hat", cost: 100, currency: "bits" }, // costs bits
+    { id: "sword", name: "Sword", type: "weapon", cost: 100, currency: "bits" }, // costs bits
+    { id: "king-crown", name: "Royal Crown", type: "hat", cost: 100, currency: "bits" }, // costs bits
+    { id: "gun", name: "M4", type: "weapon", cost: 100, currency: "bits" }, // costs bits
+];
+
+// Get Store Items
+app.get("/v1/store", (req, res) => {
+    res.json({ success: true, store: storeItems });
+});
+
+
+// ===== Equip Item =====
+app.post("/v1/inventory/equip", async (req, res) => {
+    try {
+        const { itemId, equipped } = req.body;
+        let { userId } = req.body;
+
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        const gelly = await Gelly.findOne({ userId });
+        if (!gelly) return res.status(404).json({ success: false });
+
+        // Only one item of same type can be equipped
+        const item = gelly.inventory.find(i => i.itemId === itemId);
+        if (!item) return res.status(404).json({ success: false, message: "Item not found" });
+
+        if (equipped) {
+            // Unequip all items of same type first
+            gelly.inventory.forEach(i => {
+                if (i.type === item.type) i.equipped = false;
+            });
+        }
+        item.equipped = equipped;
+
+        await gelly.save();
+        res.json({ success: true, inventory: gelly.inventory });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ success: false });
+    }
+});
 
 // ===== Admin Reset Leaderboard =====
 app.post("/v1/admin/reset-leaderboard", async (req, res) => {
