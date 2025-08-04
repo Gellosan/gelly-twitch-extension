@@ -181,7 +181,7 @@ async function getUserPoints(username) {
 }
  return data.points;
 
-  } catch (err) {
+   catch (err) {
 
     console.error("[SE] getUserPoints error:", err);
 
