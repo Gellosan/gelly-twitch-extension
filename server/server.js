@@ -6,6 +6,7 @@ require("dotenv").config();
 const Gelly = require("./Gelly.js");
 const app = express();
 const tmi = require("tmi.js");
+const jwt = require("jsonwebtoken");
 
 const twitchClient = new tmi.Client({
   identity: {
@@ -53,7 +54,6 @@ const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
-
 wss.on("connection", (ws, req) => {
   const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
   const userId = searchParams.get("user");
@@ -61,8 +61,6 @@ wss.on("connection", (ws, req) => {
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected for user: ${userId}`);
-
-    // immediately broadcast an up-to-date leaderboard
     sendLeaderboard().catch(console.error);
   }
 
@@ -74,56 +72,12 @@ wss.on("connection", (ws, req) => {
   });
 });
 
-
 function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ type: "update", state: gelly }));
   }
 }
-
-async function sendLeaderboard() {
-  let gellys = await Gelly.find();
-
-  // Apply decay to all and save
-  for (let g of gellys) {
-    if (typeof g.applyDecay === "function") {
-      g.applyDecay();
-      await g.save();
-    }
-
-    // Ensure we have proper Twitch displayName/loginName for leaderboard
-    if (!g.displayName || !g.loginName || g.displayName === "Unknown" || g.loginName === "unknown") {
-      const twitchData = await fetchTwitchUserData(g.userId);
-      if (twitchData) {
-        g.displayName = twitchData.displayName;
-        g.loginName = twitchData.loginName;
-        await g.save();
-      }
-    }
-  }
-
-  // Create care score
-  const leaderboard = gellys.map(g => ({
-    displayName: g.displayName || g.loginName || "Unknown",
-    loginName: g.loginName || "unknown",
-    score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0))
-  }));
-
-  // Sort by score
-  leaderboard.sort((a, b) => b.score - a.score);
-
-  // Top 10 only
-  const top10 = leaderboard.slice(0, 10);
-
-  // Send leaderboard to all clients
-  const data = JSON.stringify({ type: "leaderboard", entries: top10 });
-  for (const [, ws] of clients) {
-    if (ws.readyState === WebSocket.OPEN) ws.send(data);
-  }
-}
-
-
 
 // ===== Helpers =====
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
@@ -149,6 +103,18 @@ async function fetchTwitchUserData(userId) {
   }
 }
 
+function getRealTwitchId(authHeader) {
+  if (!authHeader) return null;
+  const token = authHeader.split(" ")[1];
+  try {
+    const decoded = jwt.decode(token);
+    return decoded?.user_id || null;
+  } catch (err) {
+    console.error("JWT decode error:", err);
+    return null;
+  }
+}
+
 // ===== StreamElements API =====
 const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
 const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
@@ -163,7 +129,7 @@ async function getUserPoints(username) {
 
     if (!res.ok) {
       console.error("[SE] getUserPoints failed:", await res.text());
-      return null; // don't return 0 on failure
+      return null;
     }
 
     const data = await res.json();
@@ -179,22 +145,17 @@ async function getUserPoints(username) {
   }
 }
 
-// Fetch → compute → send !setpoints via IRC
 async function deductUserPoints(username, amount) {
   try {
     const current = await getUserPoints(username);
     if (current === null) return null;
 
     const newTotal = Math.max(0, current - Math.abs(amount));
-
-    // Send the command as broadcaster
     const cmd = `!setpoints ${username} ${newTotal}`;
     console.log("[IRC] →", cmd);
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
 
-    // give WSE a moment to process (optional)
     await new Promise(r => setTimeout(r, 1500));
-
     return newTotal;
   } catch (err) {
     console.error("[deductUserPoints] error:", err);
@@ -202,15 +163,56 @@ async function deductUserPoints(username, amount) {
   }
 }
 
+// ===== Leaderboard =====
+async function sendLeaderboard() {
+  let gellys = await Gelly.find();
+
+  for (let g of gellys) {
+    if (typeof g.applyDecay === "function") {
+      g.applyDecay();
+      await g.save();
+    }
+
+    // ✅ Fix unknowns by fetching Twitch names
+    if (!g.displayName || !g.loginName || g.loginName === "unknown") {
+      const twitchData = await fetchTwitchUserData(g.userId);
+      if (twitchData) {
+        g.displayName = twitchData.displayName;
+        g.loginName = twitchData.loginName;
+        await g.save();
+      }
+    }
+  }
+
+  const leaderboard = gellys.map(g => ({
+    displayName: g.displayName || g.loginName || "Unknown",
+    loginName: g.loginName || "unknown",
+    score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0))
+  }));
+
+  leaderboard.sort((a, b) => b.score - a.score);
+  const top10 = leaderboard.slice(0, 10);
+
+  const data = JSON.stringify({ type: "leaderboard", entries: top10 });
+  for (const [, ws] of clients) {
+    if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  }
+}
 
 // ===== API Routes =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
-    const { userId } = req.params;
+    let { userId } = req.params;
+
+    // ✅ Decode real Twitch ID from JWT
+    if (req.headers.authorization) {
+      const realId = getRealTwitchId(req.headers.authorization);
+      if (realId) userId = realId;
+    }
+
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
 
-    // ✅ Resolve Twitch name early
     if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
       const twitchData = await fetchTwitchUserData(userId);
       if (twitchData) {
@@ -231,8 +233,6 @@ app.get("/v1/state/:userId", async (req, res) => {
   }
 });
 
-
-
 app.get("/v1/points/:username", async (req, res) => {
   try {
     const points = await getUserPoints(req.params.username);
@@ -241,12 +241,17 @@ app.get("/v1/points/:username", async (req, res) => {
     res.status(500).json({ success: false, points: 0 });
   }
 });
-// Cache recent balances so we don't re-fetch from SE too soon
-const lastKnownPoints = {};
 
 app.post("/v1/interact", async (req, res) => {
   try {
-    const { user, action } = req.body;
+    let { user, action } = req.body;
+
+    // ✅ Decode real Twitch ID from JWT
+    if (req.headers.authorization) {
+      const realId = getRealTwitchId(req.headers.authorization);
+      if (realId) user = realId;
+    }
+
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
@@ -254,7 +259,6 @@ app.post("/v1/interact", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    // ✅ Always resolve Twitch name first
     if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
       const twitchData = await fetchTwitchUserData(user);
       if (twitchData) {
@@ -267,7 +271,6 @@ app.post("/v1/interact", async (req, res) => {
       await gelly.save();
     }
 
-    // ✅ Now fetch points (guaranteed to have correct loginName)
     const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints} | Current points: ${userPoints}`);
@@ -285,75 +288,65 @@ app.post("/v1/interact", async (req, res) => {
     let actionSucceeded = false;
     let deductionAmount = 0;
 
-   // ===== FEED =====
-if (action === "feed") {
-  deductionAmount = 1000;
-  if (userPoints < deductionAmount)
-    return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+    if (action === "feed") {
+      deductionAmount = 1000;
+      if (userPoints < deductionAmount)
+        return res.json({ success: false, message: "Not enough Jellybeans to feed." });
 
-  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
-  if (newBal === null)            // SE failure
-    return res.json({ success: false, message: "Point deduction failed. Try again." });
+      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      if (newBal === null)
+        return res.json({ success: false, message: "Point deduction failed. Try again." });
 
-  userPoints = newBal;            // update running balance
-  gelly.energy = Math.min(500, gelly.energy + 20);
-  actionSucceeded = true;
+      userPoints = newBal;
+      gelly.energy = Math.min(500, gelly.energy + 20);
+      actionSucceeded = true;
 
-// ===== COLOR CHANGE =====
-} else if (action.startsWith("color:")) {
-  deductionAmount = 10000;
-  if (userPoints < deductionAmount)
-    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+    } else if (action.startsWith("color:")) {
+      deductionAmount = 10000;
+      if (userPoints < deductionAmount)
+        return res.json({ success: false, message: "Not enough Jellybeans to change color." });
 
-  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
-  if (newBal === null)
-    return res.json({ success: false, message: "Point deduction failed. Try again." });
+      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      if (newBal === null)
+        return res.json({ success: false, message: "Point deduction failed. Try again." });
 
-  userPoints = newBal;
-  gelly.color = action.split(":")[1] || "blue";
-  actionSucceeded = true;
+      userPoints = newBal;
+      gelly.color = action.split(":")[1] || "blue";
+      actionSucceeded = true;
 
-
-    // ===== PLAY =====
     } else if (action === "play") {
       gelly.mood = Math.min(500, gelly.mood + 20);
       actionSucceeded = true;
 
-    // ===== CLEAN =====
     } else if (action === "clean") {
       gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
       actionSucceeded = true;
 
-    // ===== START GAME =====
     } else if (action === "startgame") {
-  // Always fetch Twitch name here so they appear correctly on leaderboard
-  const twitchData = await fetchTwitchUserData(user);
-  if (twitchData) {
-    gelly.displayName = twitchData.displayName;
-    gelly.loginName = twitchData.loginName;
-  }
-
-  gelly.points = 0;
-  gelly.energy = 100;
-  gelly.mood = 100;
-  gelly.cleanliness = 100;
-  gelly.lastUpdated = new Date();
-  actionSucceeded = true;
+      const twitchData = await fetchTwitchUserData(user);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      }
+      gelly.points = 0;
+      gelly.energy = 100;
+      gelly.mood = 100;
+      gelly.cleanliness = 100;
+      gelly.lastUpdated = new Date();
+      actionSucceeded = true;
 
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
 
-   if (actionSucceeded) {
-  gelly.lastActionTimes[cooldownKey] = now;
-  await gelly.save();
+    if (actionSucceeded) {
+      gelly.lastActionTimes[cooldownKey] = now;
+      await gelly.save();
 
-  const updatedBalance = userPoints;   // already the confirmed new total
-  broadcastState(user, gelly);
-  sendLeaderboard();
-
-  return res.json({ success: true, newBalance: updatedBalance });
-}
+      broadcastState(user, gelly);
+      sendLeaderboard();
+      return res.json({ success: true, newBalance: userPoints });
+    }
 
     res.json({ success: false, message: "Action failed" });
 
@@ -362,8 +355,6 @@ if (action === "feed") {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
-
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
