@@ -131,38 +131,60 @@ async function getUserPoints(username) {
       `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
     );
-    if (!res.ok) return 0;
+
+    if (!res.ok) {
+      console.error("[SE] getUserPoints failed:", await res.text());
+      return null; // don't return 0 on failure
+    }
+
     const data = await res.json();
-    return data?.points || 0;
-  } catch {
-    return 0;
+    if (typeof data?.points !== "number") {
+      console.error("[SE] Unexpected getUserPoints response:", data);
+      return null;
+    }
+
+    return data.points;
+  } catch (err) {
+    console.error("[SE] getUserPoints error:", err);
+    return null;
   }
 }
 
-// 3-step StreamElements deduction (fetch → compute → put)
 async function deductUserPoints(username, amount) {
   try {
-    const current = await getUserPoints(username);            // 1️⃣ fetch
-    const newTotal = Math.max(0, current - Math.abs(amount)); // 2️⃣ compute
+    const current = await getUserPoints(username);
 
-    // 3️⃣ set – newTotal must be in the URL, body must be empty
+    if (current === null) {
+      console.warn(`[SE] Skipping deduction for ${username} — current points unavailable`);
+      return null;
+    }
+
+    const newTotal = Math.max(0, current - Math.abs(amount));
+
     const res = await fetch(
-      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}/${newTotal}`,
-      { method: "PUT", headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` } }
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
+      {
+        method: "PUT",
+        headers: {
+          "Authorization": `Bearer ${STREAM_ELEMENTS_JWT}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ points: newTotal })
+      }
     );
 
     if (!res.ok) {
       console.error("[SE] PUT failed:", await res.text());
       return null;
     }
+
     console.log(`[SE] ${username}: ${current} ➜ ${newTotal} (-${amount})`);
-    return newTotal;                                         // confirmed balance
+    return newTotal;
   } catch (err) {
     console.error("[SE] deduct error:", err);
     return null;
   }
 }
-
 
 
 // ===== API Routes =====
