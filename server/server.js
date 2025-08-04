@@ -199,10 +199,18 @@ app.get("/v1/state/:userId", async (req, res) => {
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
 
+    if (!gelly.displayName || !gelly.loginName) {
+      const twitchData = await fetchTwitchUserData(userId);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      }
+    }
+
     if (typeof gelly.applyDecay === "function") {
       gelly.applyDecay();
-      await gelly.save();
     }
+    await gelly.save();
 
     res.json({ success: true, state: gelly });
   } catch {
@@ -301,12 +309,20 @@ if (action === "feed") {
 
     // ===== START GAME =====
     } else if (action === "startgame") {
-      gelly.points = 0;
-      gelly.energy = 100;
-      gelly.mood = 100;
-      gelly.cleanliness = 100;
-      gelly.lastUpdated = new Date();
-      actionSucceeded = true;
+  // Always fetch Twitch name here so they appear correctly on leaderboard
+  const twitchData = await fetchTwitchUserData(user);
+  if (twitchData) {
+    gelly.displayName = twitchData.displayName;
+    gelly.loginName = twitchData.loginName;
+  }
+
+  gelly.points = 0;
+  gelly.energy = 100;
+  gelly.mood = 100;
+  gelly.cleanliness = 100;
+  gelly.lastUpdated = new Date();
+  actionSucceeded = true;
+
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
