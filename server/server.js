@@ -53,6 +53,7 @@ const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
+
 wss.on("connection", (ws, req) => {
   const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
   const userId = searchParams.get("user");
@@ -60,6 +61,9 @@ wss.on("connection", (ws, req) => {
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected for user: ${userId}`);
+
+    // immediately broadcast an up-to-date leaderboard
+    sendLeaderboard().catch(console.error);
   }
 
   ws.on("close", () => {
@@ -69,6 +73,7 @@ wss.on("connection", (ws, req) => {
     }
   });
 });
+
 
 function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
