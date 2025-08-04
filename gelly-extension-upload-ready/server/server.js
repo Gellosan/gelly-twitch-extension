@@ -53,6 +53,7 @@ const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
+
 wss.on("connection", (ws, req) => {
   const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
   const userId = searchParams.get("user");
@@ -60,6 +61,9 @@ wss.on("connection", (ws, req) => {
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected for user: ${userId}`);
+
+    // immediately broadcast an up-to-date leaderboard
+    sendLeaderboard().catch(console.error);
   }
 
   ws.on("close", () => {
@@ -69,6 +73,7 @@ wss.on("connection", (ws, req) => {
     }
   });
 });
+
 
 function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
@@ -85,6 +90,16 @@ async function sendLeaderboard() {
     if (typeof g.applyDecay === "function") {
       g.applyDecay();
       await g.save();
+    }
+
+    // Ensure we have proper Twitch displayName/loginName for leaderboard
+    if (!g.displayName || !g.loginName || g.displayName === "Unknown" || g.loginName === "unknown") {
+      const twitchData = await fetchTwitchUserData(g.userId);
+      if (twitchData) {
+        g.displayName = twitchData.displayName;
+        g.loginName = twitchData.loginName;
+        await g.save();
+      }
     }
   }
 
@@ -107,6 +122,7 @@ async function sendLeaderboard() {
     if (ws.readyState === WebSocket.OPEN) ws.send(data);
   }
 }
+
 
 
 // ===== Helpers =====
@@ -194,10 +210,18 @@ app.get("/v1/state/:userId", async (req, res) => {
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
 
+    if (!gelly.displayName || !gelly.loginName) {
+      const twitchData = await fetchTwitchUserData(userId);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      }
+    }
+
     if (typeof gelly.applyDecay === "function") {
       gelly.applyDecay();
-      await gelly.save();
     }
+    await gelly.save();
 
     res.json({ success: true, state: gelly });
   } catch {
@@ -296,12 +320,20 @@ if (action === "feed") {
 
     // ===== START GAME =====
     } else if (action === "startgame") {
-      gelly.points = 0;
-      gelly.energy = 100;
-      gelly.mood = 100;
-      gelly.cleanliness = 100;
-      gelly.lastUpdated = new Date();
-      actionSucceeded = true;
+  // Always fetch Twitch name here so they appear correctly on leaderboard
+  const twitchData = await fetchTwitchUserData(user);
+  if (twitchData) {
+    gelly.displayName = twitchData.displayName;
+    gelly.loginName = twitchData.loginName;
+  }
+
+  gelly.points = 0;
+  gelly.energy = 100;
+  gelly.mood = 100;
+  gelly.cleanliness = 100;
+  gelly.lastUpdated = new Date();
+  actionSucceeded = true;
+
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
