@@ -179,17 +179,6 @@ async function getUserPoints(username) {
     return null;
   }
 }
- return data.points;
-
-   catch (err) {
-
-    console.error("[SE] getUserPoints error:", err);
-
-    return null;
-
-  }
-
-}
 
 
 
@@ -317,7 +306,7 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     await gelly.save();
-onst usernameForPoints = gelly.loginName;
+const usernameForPoints = gelly.loginName;
 
     let userPoints = await getUserPoints(usernameForPoints);
 
