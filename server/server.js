@@ -210,12 +210,14 @@ app.get("/v1/state/:userId", async (req, res) => {
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
 
-    if (!gelly.displayName || !gelly.loginName) {
+    // ✅ Resolve Twitch name early
+    if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
       const twitchData = await fetchTwitchUserData(userId);
       if (twitchData) {
         gelly.displayName = twitchData.displayName;
         gelly.loginName = twitchData.loginName;
       }
+      await gelly.save();
     }
 
     if (typeof gelly.applyDecay === "function") {
@@ -228,6 +230,7 @@ app.get("/v1/state/:userId", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 
 app.get("/v1/points/:username", async (req, res) => {
@@ -251,7 +254,8 @@ app.post("/v1/interact", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    if (!gelly.displayName || !gelly.loginName) {
+    // ✅ Always resolve Twitch name first
+    if (!gelly.displayName || !gelly.loginName || gelly.loginName === "unknown") {
       const twitchData = await fetchTwitchUserData(user);
       if (twitchData) {
         gelly.displayName = twitchData.displayName;
@@ -260,8 +264,10 @@ app.post("/v1/interact", async (req, res) => {
         gelly.displayName = "Unknown";
         gelly.loginName = "unknown";
       }
+      await gelly.save();
     }
 
+    // ✅ Now fetch points (guaranteed to have correct loginName)
     const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
     console.log(`[DEBUG] Interact: ${action} for ${usernameForPoints} | Current points: ${userPoints}`);
