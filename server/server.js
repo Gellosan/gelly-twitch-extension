@@ -139,40 +139,43 @@ async function getUserPoints(username) {
   }
 }
 
+// 3-step StreamElements deduction (fetch → compute → put)
 async function deductUserPoints(username, amount) {
   try {
-    // 1️⃣ Get current points from SE API
-    const currentPoints = await getUserPoints(username);
-    const newBalance = Math.max(0, currentPoints - Math.abs(amount));
+    // 1. current total
+    const current = await getUserPoints(username);     // e.g. 196000
 
-    console.log(`[DEBUG] Current: ${currentPoints}, Deduct: ${amount}, New: ${newBalance}`);
+    // 2. new total (never below 0)
+    const newTotal = Math.max(0, current - Math.abs(amount));
 
-    // 2️⃣ Tell StreamElements bot to set the new points
+    // 3. set new total
     const res = await fetch(
-      `https://api.streamelements.com/kappa/v2/bot/${STREAM_ELEMENTS_CHANNEL_ID}/say`,
+      `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`,
       {
-        method: "POST",
+        method: "PUT",
         headers: {
           Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({
-          message: `!setpoints ${username} ${newBalance}`
-        }),
+        body: JSON.stringify({ points: newTotal }),
       }
     );
 
-    // 3️⃣ Log errors if any
     if (!res.ok) {
-      const errText = await res.text();
-      console.error("[ERROR] SE bot send failed:", errText);
-    } else {
-      console.log(`[DEBUG] Sent to SE bot: !setpoints ${username} ${newBalance}`);
+      console.error("[SE] PUT failed:", await res.text());
+      return current;               // fall back to old value
     }
+
+    console.log(
+      `[SE] ${username}: ${current} ➜ ${newTotal} (-${amount})`
+    );
+    return newTotal;                // pass the fresh balance back
   } catch (err) {
-    console.error("[ERROR] deductUserPoints via SE bot:", err);
+    console.error("[SE] deduct error:", err);
+    return null;
   }
 }
+
 
 
 
@@ -245,25 +248,35 @@ app.post("/v1/interact", async (req, res) => {
     let actionSucceeded = false;
     let deductionAmount = 0;
 
-    // ===== FEED =====
-    if (action === "feed") {
-      deductionAmount = 1000;
-      if (userPoints < deductionAmount) {
-        return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-      }
-      await deductUserPoints(usernameForPoints, deductionAmount);
-      gelly.energy = Math.min(500, gelly.energy + 20);
-      actionSucceeded = true;
+   // ===== FEED =====
+if (action === "feed") {
+  deductionAmount = 1000;
+  if (userPoints < deductionAmount)
+    return res.json({ success: false, message: "Not enough Jellybeans to feed." });
 
-    // ===== COLOR CHANGE =====
-    } else if (action.startsWith("color:")) {
-      deductionAmount = 10000;
-      if (userPoints < deductionAmount) {
-        return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      }
-      await deductUserPoints(usernameForPoints, deductionAmount);
-      gelly.color = action.split(":")[1] || "blue";
-      actionSucceeded = true;
+  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+  if (newBal === null)            // SE failure
+    return res.json({ success: false, message: "Point deduction failed. Try again." });
+
+  userPoints = newBal;            // update running balance
+  gelly.energy = Math.min(500, gelly.energy + 20);
+  actionSucceeded = true;
+
+// ===== COLOR CHANGE =====
+} else if (action.startsWith("color:")) {
+  deductionAmount = 10000;
+  if (userPoints < deductionAmount)
+    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+
+  const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+  if (newBal === null)
+    return res.json({ success: false, message: "Point deduction failed. Try again." });
+
+  userPoints = newBal;
+  gelly.color = action.split(":")[1] || "blue";
+  actionSucceeded = true;
+}
+
 
     // ===== PLAY =====
     } else if (action === "play") {
