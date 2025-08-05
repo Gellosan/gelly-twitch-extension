@@ -63,7 +63,6 @@ function updateGellyImage(stage, color, equippedItems = []) {
     const container = document.getElementById("background");
     container.innerHTML = ""; // Clear old content
 
-    // Base pet image
     const baseImg = document.createElement("img");
     baseImg.id = "gelly-image";
     if (stage === "egg") {
@@ -75,7 +74,6 @@ function updateGellyImage(stage, color, equippedItems = []) {
     }
     container.appendChild(baseImg);
 
-    // Add equipped accessories
     equippedItems
         .filter(item => item.equipped)
         .forEach(item => {
@@ -112,7 +110,6 @@ function renderInventory(items) {
         invContainer.appendChild(div);
     });
 
-    // Update Gelly with equipped accessories
     updateGellyImage(currentStage, "blue", items);
 }
 
@@ -147,446 +144,875 @@ async function fetchStore() {
         console.error("Failed to fetch store:", err);
     }
 }
-// Open Store
-document.getElementById("openStoreBtn").addEventListener("click", () => {
+
+// ===== Safe Event Bind Helper =====
+const safeBind = (id, event, handler) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener(event, handler);
+};
+
+// ===== Open Store =====
+safeBind("openStoreBtn", "click", () => {
     document.getElementById("gelly-container").style.display = "none";
     document.getElementById("store-menu").style.display = "block";
 });
 
-// Back to Game
-document.getElementById("backToGameBtn").addEventListener("click", () => {
+// ===== Back to Game from Store =====
+safeBind("backToGameBtn", "click", () => {
     document.getElementById("store-menu").style.display = "none";
     document.getElementById("gelly-container").style.display = "block";
 });
-
 function renderStore(items) {
+
     const storeContainer = document.getElementById("store");
+
     storeContainer.innerHTML = "";
 
+
+
     items.forEach(item => {
+
         const itemDiv = document.createElement("div");
+
         itemDiv.className = "store-item";
 
+
+
         const img = document.createElement("img");
+
         img.src = `assets/${item.id}.png`; // exact asset filename match
+
         img.alt = item.name;
+
+
 
         const nameEl = document.createElement("p");
+
         nameEl.textContent = item.name;
 
+
+
         const costEl = document.createElement("p");
+
         costEl.textContent = `${item.cost} ${item.currency}`;
 
+
+
         const buyBtn = document.createElement("button");
+
         buyBtn.textContent = `Buy`;
+
         buyBtn.addEventListener("click", () => {
+
             if (item.currency === "jellybeans") {
+
                 buyWithJellybeans(item);
+
             } else if (item.currency === "bits") {
+
                 buyWithBits(item);
+
             }
+
         });
+
+
 
         itemDiv.appendChild(img);
+
         itemDiv.appendChild(nameEl);
+
         itemDiv.appendChild(costEl);
+
         itemDiv.appendChild(buyBtn);
+
         storeContainer.appendChild(itemDiv);
+
     });
+
 }
+
+
 
 // ===== Buy Jellybean Item =====
+
 async function buyWithJellybeans(item) {
+
     try {
+
         const res = await fetch(`https://gelly-server.onrender.com/v1/inventory/buy`, {
+
             method: "POST",
+
             headers: {
+
                 "Authorization": `Bearer ${twitchAuthToken}`,
+
                 "Content-Type": "application/json"
+
             },
+
             body: JSON.stringify({
+
                 userId: twitchUserId,
+
                 itemId: item.id,
+
                 name: item.name,
+
                 type: item.type,
+
                 cost: item.cost,
+
                 currency: "jellybeans"
+
             })
+
         });
+
         const data = await res.json();
+
         if (data.success) {
+
             showTempMessage(`Purchased ${item.name}!`);
+
             renderInventory(data.inventory);
+
             updateGellyImage(currentStage, "blue", data.inventory);
+
             fetchJellybeanBalance();
+
         } else {
+
             showTempMessage(data.message || "Purchase failed");
+
         }
+
     } catch (err) {
+
         console.error("Buy Jellybeans failed:", err);
+
     }
+
 }
+
+
 
 // ===== Buy Bits Item =====
+
 async function buyWithBits(item) {
+
     try {
+
         Twitch.ext.bits.getProducts()
+
             .then(products => {
+
                 const product = products.find(p => p.sku === item.id);
+
                 if (!product) {
+
                     showTempMessage("Bits product not found");
+
                     return;
+
                 }
+
                 return Twitch.ext.bits.purchase(product.sku);
+
             })
+
             .then(() => {
+
                 // Twitch will send a transaction receipt via onTransactionComplete
+
             })
+
             .catch(err => {
+
                 console.error("Bits purchase failed:", err);
+
                 showTempMessage("Bits purchase failed");
+
             });
+
     } catch (err) {
+
         console.error("Buy Bits failed:", err);
+
     }
+
 }
+
+
 
 // ===== Listen for Bits purchase confirmation =====
+
 if (Twitch.ext.bits) {
+
     Twitch.ext.bits.onTransactionComplete(transaction => {
+
         fetch(`https://gelly-server.onrender.com/v1/inventory/buy`, {
+
             method: "POST",
+
             headers: {
+
                 "Authorization": `Bearer ${twitchAuthToken}`,
+
                 "Content-Type": "application/json"
+
             },
+
             body: JSON.stringify({
+
                 userId: twitchUserId,
+
                 itemId: transaction.product.sku,
+
                 name: transaction.product.displayName,
+
                 type: "unknown",
+
                 cost: transaction.product.cost.amount,
+
                 currency: "bits",
+
                 transactionId: transaction.transactionId
+
             })
+
         })
+
         .then(res => res.json())
+
         .then(data => {
+
             if (data.success) {
+
                 showTempMessage(`Purchased ${transaction.product.displayName}!`);
+
                 renderInventory(data.inventory);
+
                 updateGellyImage(currentStage, "blue", data.inventory);
+
             } else {
+
                 showTempMessage(data.message || "Bits purchase failed");
+
             }
+
         })
+
         .catch(err => console.error("Transaction verification failed:", err));
+
     });
+
 }
+
+
 
 function updateColorPickerButtons() {
+
     const colorSelect = document.getElementById("gellyColor");
+
     if (colorSelect) {
+
         colorSelect.disabled = jellybeanBalance < COLOR_CHANGE_COST;
+
     }
+
 }
+
+
 
 // ===== Cooldown Tracking =====
+
 const cooldowns = {};
+
 function isOnCooldown(action) {
+
     return cooldowns[action] && Date.now() < cooldowns[action];
+
 }
+
 function setCooldown(action, ms) {
+
     cooldowns[action] = Date.now() + ms;
+
 }
+
+
 
 // ===== Jellybean Balance =====
+
 async function fetchJellybeanBalance() {
+
     if (!loginName) return;
+
     try {
+
         const res = await fetch(`https://gelly-server.onrender.com/v1/points/${loginName}`);
+
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
         const data = await res.json();
+
         jellybeanBalance = data.points || 0;
+
         jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+
         updateColorPickerButtons();
+
     } catch (err) {
+
         console.error("[ERROR] Failed to fetch jellybean balance:", err);
+
     }
+
 }
+
+
 
 // ===== State Updates =====
+
 function updateUIFromState(state) {
+
     currentStage = state.stage;
+
     energyEl.textContent = Math.floor(state.energy);
+
     moodEl.textContent = Math.floor(state.mood);
+
     cleanlinessEl.textContent = Math.floor(state.cleanliness);
+
     updateGellyImage(state.stage, state.color || "blue");
 
-    // === Inventory + Store visibility ===
+
+
     if (state.stage !== "egg") {
-    document.getElementById("openInventoryBtn").style.display = "inline-block";
-    document.getElementById("openStoreBtn").style.display = "inline-block";
-} else {
-    document.getElementById("openInventoryBtn").style.display = "none";
-    document.getElementById("openStoreBtn").style.display = "none";
-}
+
+        document.getElementById("openInventoryBtn").style.display = "inline-block";
+
+        document.getElementById("openStoreBtn").style.display = "inline-block";
 
 
-        // Directly use inventory from state if available
+
         if (Array.isArray(state.inventory)) {
+
             renderInventory(state.inventory);
+
             renderEquippedAccessories(state.inventory);
+
         } else {
+
             fetchInventory().then(() => {
+
                 if (Array.isArray(state.inventory)) {
+
                     renderEquippedAccessories(state.inventory);
+
                 }
+
             });
+
         }
 
+
+
         fetchStore();
+
     } else {
+
+        document.getElementById("openInventoryBtn").style.display = "none";
+
+        document.getElementById("openStoreBtn").style.display = "none";
+
         document.getElementById("inventory-section").style.display = "none";
+
         document.getElementById("store-section").style.display = "none";
+
         clearEquippedAccessories();
+
     }
+
 }
+
+
+
+
 
 // === Render Equipped Accessories ===
+
 function renderEquippedAccessories(inventory) {
+
     const gellyContainer = document.getElementById("background");
 
+
+
     // Remove old accessories
+
     document.querySelectorAll(".equipped-accessory").forEach(el => el.remove());
+
+
 
     // Add equipped items on top of Gelly
+
     inventory.filter(item => item.equipped).forEach(item => {
+
         const img = document.createElement("img");
+
         img.src = `assets/${item.itemId}.png`; // exact asset filename match
+
         img.alt = item.name;
+
         img.className = "equipped-accessory";
+
         img.style.position = "absolute";
+
         img.style.pointerEvents = "none";
+
         img.style.zIndex = "10"; // above Gelly
+
         img.style.top = "0"; // adjust for positioning
+
         img.style.left = "50%";
+
         img.style.transform = "translateX(-50%)";
+
         img.style.maxWidth = "100px"; // scale accessory
 
+
+
         gellyContainer.appendChild(img);
+
     });
+
 }
 
+
+
 // === Clear accessories ===
+
 function clearEquippedAccessories() {
+
     document.querySelectorAll(".equipped-accessory").forEach(el => el.remove());
+
 }
+
+
+
+
 
 
 
 // ===== Leaderboard =====
+
 function updateLeaderboard(entries) {
+
     leaderboardList.innerHTML = "";
+
     entries.forEach(entry => {
+
         const li = document.createElement("li");
+
         li.textContent = `${entry.displayName || entry.loginName}: ${entry.score} care score`;
+
         leaderboardList.appendChild(li);
+
     });
+
 }
 
+
+
 // ===== Interact =====
+
 async function interact(action) {
+
     if (!twitchUserId || !twitchAuthToken) return;
+
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
+
     const cooldownKey = action.startsWith("color:") ? "color" : action;
+
     const cooldownMs = ACTION_COOLDOWNS[cooldownKey] || 60000;
+
     const button =
+
         action === "feed" ? document.getElementById("feedBtn") :
+
         action === "play" ? document.getElementById("playBtn") :
+
         action === "clean" ? document.getElementById("cleanBtn") : null;
+
+
 
     if (isOnCooldown(cooldownKey)) return;
 
+
+
     try {
+
         const res = await fetch("https://gelly-server.onrender.com/v1/interact", {
+
             method: "POST",
+
             headers: { 
+
                 "Authorization": `Bearer ${twitchAuthToken}`,
+
                 "Content-Type": "application/json"
+
             },
+
             body: JSON.stringify({ user: twitchUserId, action })
+
         });
 
+
+
         const data = await res.json();
+
         if (!data.success) {
+
             showTempMessage(data.message || "Action failed");
+
             return; // ❌ Don't start cooldown if server failed
+
         }
+
+
 
         // ✅ Only start cooldown when success is true
+
         setCooldown(cooldownKey, cooldownMs);
+
         if (button) {
+
             const originalText = button.textContent;
+
             let remaining = Math.floor(cooldownMs / 1000);
+
             button.disabled = true;
+
             button.textContent = `${originalText} (${remaining}s)`;
+
             const interval = setInterval(() => {
+
                 remaining -= 1;
+
                 if (remaining > 0) {
+
                     button.textContent = `${originalText} (${remaining}s)`;
+
                 } else {
+
                     clearInterval(interval);
+
                     button.disabled = false;
+
                     button.textContent = originalText;
+
                 }
+
             }, 1000);
+
         }
+
+
 
         // Update UI from latest state
+
         if (data.state) {
+
             updateUIFromState(data.state);
+
         }
+
+
 
         if (action === "feed" || action === "play" || action === "clean") {
+
             triggerGellyAnimation(action);
+
         }
+
         if (action.startsWith("color:")) {
+
             triggerColorChangeEffect();
+
         }
+
         animateGelly();
 
+
+
         if (typeof data.newBalance === "number") {
+
             jellybeanBalance = data.newBalance;
+
             jellybeanBalanceEl.textContent = jellybeanBalance.toLocaleString();
+
             updateColorPickerButtons();
+
         } else {
+
             await fetchJellybeanBalance();
+
             updateColorPickerButtons();
+
         }
+
     } catch (err) {
+
         console.error("[ERROR] interact() failed:", err);
+
         // ❌ No cooldown on network/server error
+
     }
+
 }
+
 // ===== Init Game =====
+
+
 
 async function initGame() {
 
+
+
     console.log("Starting game for user:", twitchUserId);
+
+
 
     try {
 
+
+
         const res = await fetch(`https://gelly-server.onrender.com/v1/state/${twitchUserId}`, {
+
+
 
             method: "GET",
 
+
+
             headers: {
+
+
 
                 "Authorization": `Bearer ${twitchAuthToken}`,
 
+
+
                 "Content-Type": "application/json"
 
+
+
             }
+
+
 
         });
 
+
+
         if (res.ok) {
+
+
 
             const data = await res.json();
 
+
+
             if (data.success) {
+
+
 
                 updateUIFromState(data.state);
 
+
+
                 loginName = data.state.loginName;
+
+
 
                 await fetchJellybeanBalance();
 
+
+
             }
+
+
 
         }
 
+
+
     } catch (err) {
+
+
 
         console.error("[ERROR] Fetching state failed:", err);
 
+
+
     }
+
+
 
     connectWebSocket();
 
+
+
     startGame();
 
+
+
 }
+
+
+
 
 
 // ===== Start Game =====
+
 function startGame() {
+
     const startScreen = document.getElementById("landing-page");
+
     const gameScreen = document.getElementById("gelly-container");
+
     if (!startScreen || !gameScreen) {
+
         console.error("[ERROR] Missing start or game screen element in HTML");
+
         return;
+
     }
+
     startScreen.style.display = "none";
+
     gameScreen.style.display = "block";
+
 }
+
+
 
 // ===== WebSocket =====
+
 let ws;
+
 function connectWebSocket() {
+
     if (!twitchUserId) return;
+
     ws = new WebSocket(`wss://gelly-server.onrender.com?user=${twitchUserId}`);
+
     ws.onmessage = (event) => {
+
         const msg = JSON.parse(event.data);
+
         if (msg.type === "update") updateUIFromState(msg.state);
+
         else if (msg.type === "leaderboard") updateLeaderboard(msg.entries);
+
     };
+
 }
+
+
 
 // ===== Twitch Auth =====
+
 Twitch.ext.onAuthorized(function(auth) {
+
     console.log("Authorized with ID:", auth.userId);
+
     twitchUserId = auth.userId;
+
     twitchAuthToken = auth.token;
+
     startKeepAlive();
 
+
+
     if (twitchUserId.startsWith("U") && localStorage.getItem("linkedOnce") !== "true") {
+
         console.log("⚠️ User is opaque — needs to link");
+
         showLinkButton();
+
         return;
+
     }
+
     initGame();
+
 });
 
-function startKeepAlive() {
-    setInterval(() => {
-        fetch("https://gelly-server.onrender.com/ping")
-            .then(res => res.json())
-            .then(data => console.log("Keep-alive ping:", data.message))
-            .catch(err => console.warn("Keep-alive failed:", err));
-    }, 50000);
-}
 
+
+function startKeepAlive() {
+
+    setInterval(() => {
+
+        fetch("https://gelly-server.onrender.com/ping")
+
+            .then(res => res.json())
+
+            .then(data => console.log("Keep-alive ping:", data.message))
+
+            .catch(err => console.warn("Keep-alive failed:", err));
+
+    }, 50000);
+
+}
 
 
 // ===== Action Buttons =====
-document.getElementById("feedBtn")?.addEventListener("click", () => interact("feed"));
-document.getElementById("playBtn")?.addEventListener("click", () => interact("play"));
-document.getElementById("cleanBtn")?.addEventListener("click", () => interact("clean"));
-document.getElementById("startGameBtn")?.addEventListener("click", () => {
-    initGame(); // ✅ Load game state and then start game
-});
+safeBind("feedBtn", "click", () => interact("feed"));
+safeBind("playBtn", "click", () => interact("play"));
+safeBind("cleanBtn", "click", () => interact("clean"));
+safeBind("startGameBtn", "click", () => initGame());
 
-
-document.addEventListener("DOMContentLoaded", () => {
-    const startGameBtn = document.getElementById("startGameBtn");
-    if (startGameBtn) {
-        startGameBtn.addEventListener("click", startGame);
+// ===== Help Button =====
+safeBind("helpBtn", "click", () => {
+    const helpBox = document.getElementById("help-box");
+    const helpBtn = document.getElementById("helpBtn");
+    if (helpBox && helpBtn) {
+        if (helpBox.style.display === "none" || helpBox.style.display === "") {
+            helpBox.style.display = "block";
+            helpBtn.textContent = "Close Help";
+        } else {
+            helpBox.style.display = "none";
+            helpBtn.textContent = "Help";
+        }
     }
 });
 
-// ===== Color Picker =====
+// ===== Open / Close Inventory =====
+safeBind("openInventoryBtn", "click", () => {
+    document.getElementById("gelly-container").style.display = "none";
+    document.getElementById("inventory-menu").style.display = "block";
+});
+safeBind("backFromInventoryBtn", "click", () => {
+    document.getElementById("inventory-menu").style.display = "none";
+    document.getElementById("gelly-container").style.display = "block";
+});
+
+// ===== Open / Close Store =====
+safeBind("openStoreBtn", "click", () => {
+    document.getElementById("gelly-container").style.display = "none";
+    document.getElementById("store-menu").style.display = "block";
+});
+safeBind("backFromStoreBtn", "click", () => {
+    document.getElementById("store-menu").style.display = "none";
+    document.getElementById("gelly-container").style.display = "block";
+});
+
+// ===== Color Picker Buttons =====
 document.querySelectorAll(".color-btn").forEach(btn => {
     btn.addEventListener("click", () => {
         const selectedColor = btn.dataset.color;
@@ -595,46 +1021,3 @@ document.querySelectorAll(".color-btn").forEach(btn => {
         updateGellyImage(currentStage, selectedColor);
     });
 });
-
-// ===== Help Button =====
-document.getElementById("helpBtn")?.addEventListener("click", () => {
-    const helpBox = document.getElementById("help-box");
-    const helpBtn = document.getElementById("helpBtn");
-    if (helpBox.style.display === "none" || helpBox.style.display === "") {
-        helpBox.style.display = "block";
-        helpBtn.textContent = "Close Help";
-    } else {
-        helpBox.style.display = "none";
-        helpBtn.textContent = "Help";
-    }
-});
-// ===== Open / Close Inventory =====
-document.getElementById("openInventoryBtn").addEventListener("click", () => {
-    document.getElementById("gelly-container").style.display = "none";
-    document.getElementById("inventory-menu").style.display = "block";
-});
-document.getElementById("backFromInventoryBtn").addEventListener("click", () => {
-    document.getElementById("inventory-menu").style.display = "none";
-    document.getElementById("gelly-container").style.display = "block";
-});
-
-// ===== Open / Close Store =====
-document.getElementById("openStoreBtn").addEventListener("click", () => {
-    document.getElementById("gelly-container").style.display = "none";
-    document.getElementById("store-menu").style.display = "block";
-});
-document.getElementById("backFromStoreBtn").addEventListener("click", () => {
-    document.getElementById("store-menu").style.display = "none";
-    document.getElementById("gelly-container").style.display = "block";
-});
-
-
-linkBtn.addEventListener("click", () => {
-
-    Twitch.ext.actions.requestIdShare();
-
-    localStorage.setItem("linkedOnce", "true"); // remember link
-
-    linkBtn.style.display = "none";
-
-    setTimeout(() => initGame(), 1000); // start after linking
