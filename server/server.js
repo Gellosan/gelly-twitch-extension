@@ -413,6 +413,12 @@ app.post("/v1/inventory/buy", async (req, res) => {
             gelly = new Gelly({ userId, points: 0, inventory: [] });
         }
 
+        // Ensure inventory is an array
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+        }
+
+        // Handle currency checks
         if (currency === "jellybeans") {
             const usernameForPoints = gelly.loginName || (await fetchTwitchUserData(userId))?.loginName || "guest";
             let userPoints = await getUserPoints(usernameForPoints);
@@ -442,6 +448,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
+
 
 async function verifyBitsTransaction(transactionId, userId) {
     try {
