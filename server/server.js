@@ -369,6 +369,32 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
+// ===== Get Inventory =====
+app.get("/v1/inventory/:userId", async (req, res) => {
+    try {
+        let { userId } = req.params;
+
+        // Resolve real Twitch ID from auth token if present
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        // Try to find Gelly
+        let gelly = await Gelly.findOne({ userId });
+
+        // If none exists, return an empty inventory
+        if (!gelly) {
+            return res.status(200).json({ success: true, inventory: [] });
+        }
+
+        res.json({ success: true, inventory: gelly.inventory || [] });
+
+    } catch (err) {
+        console.error("[ERROR] GET /v1/inventory:", err);
+        res.status(500).json({ success: false, message: "Server error" });
+    }
+});
 
 // ===== Buy Item =====
 app.post("/v1/inventory/buy", async (req, res) => {
@@ -381,12 +407,14 @@ app.post("/v1/inventory/buy", async (req, res) => {
             if (realId) userId = realId;
         }
 
-        const gelly = await Gelly.findOne({ userId });
-        if (!gelly) return res.status(404).json({ success: false, message: "Player not found" });
+        // Always find or create a Gelly entry for this user
+        let gelly = await Gelly.findOne({ userId });
+        if (!gelly) {
+            gelly = new Gelly({ userId, points: 0, inventory: [] });
+        }
 
         if (currency === "jellybeans") {
-            // Existing Jellybean logic
-            const usernameForPoints = gelly.loginName;
+            const usernameForPoints = gelly.loginName || (await fetchTwitchUserData(userId))?.loginName || "guest";
             let userPoints = await getUserPoints(usernameForPoints);
             if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans" });
 
@@ -394,24 +422,27 @@ app.post("/v1/inventory/buy", async (req, res) => {
             if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
 
         } else if (currency === "bits") {
-            // Verify Twitch Bits transaction
             const valid = await verifyBitsTransaction(transactionId, userId);
             if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
         } else {
             return res.json({ success: false, message: "Invalid currency type" });
         }
 
-        // Add to inventory
-        gelly.inventory.push({ itemId, name, type, equipped: false });
+        // Add to inventory if not already owned
+        if (!gelly.inventory.some(i => i.itemId === itemId)) {
+            gelly.inventory.push({ itemId, name, type, equipped: false });
+        }
+
         await gelly.save();
 
         res.json({ success: true, inventory: gelly.inventory });
 
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ success: false });
+        console.error("[ERROR] POST /v1/inventory/buy:", err);
+        res.status(500).json({ success: false, message: "Server error" });
     }
 });
+
 async function verifyBitsTransaction(transactionId, userId) {
     try {
         const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?id=${transactionId}`, {
