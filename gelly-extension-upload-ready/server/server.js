@@ -283,50 +283,49 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     let actionSucceeded = false;
-    let deductionAmount = 0;
 
-    // ===== FEED =====
     if (action === "feed") {
-      deductionAmount = 10000;
-      if (userPoints < deductionAmount)
+      const cost = 10000;
+      if (userPoints < cost)
         return res.json({ success: false, message: "Not enough Jellybeans to feed." });
 
-      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      const newBal = await deductUserPoints(usernameForPoints, cost);
       if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-
       userPoints = newBal;
-      gelly.energy = Math.min(500, gelly.energy + 20);
+
+      // Use Gelly method so growth happens
+      const result = gelly.updateStats("feed");
+      if (!result.success) return res.json({ success: false, message: result.message });
       actionSucceeded = true;
 
-    // ===== COLOR CHANGE =====
     } else if (action.startsWith("color:")) {
-      deductionAmount = 50000;
-      if (userPoints < deductionAmount)
+      const cost = 50000;
+      if (userPoints < cost)
         return res.json({ success: false, message: "Not enough Jellybeans to change color." });
 
-      const newBal = await deductUserPoints(usernameForPoints, deductionAmount);
+      const newBal = await deductUserPoints(usernameForPoints, cost);
       if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-
       userPoints = newBal;
+
       gelly.color = action.split(":")[1] || "blue";
       actionSucceeded = true;
 
-    // ===== PLAY =====
     } else if (action === "play") {
-      gelly.mood = Math.min(500, gelly.mood + 20);
+      const result = gelly.updateStats("play");
+      if (!result.success) return res.json({ success: false, message: result.message });
       actionSucceeded = true;
 
-    // ===== CLEAN =====
     } else if (action === "clean") {
-      gelly.cleanliness = Math.min(500, gelly.cleanliness + 20);
+      const result = gelly.updateStats("clean");
+      if (!result.success) return res.json({ success: false, message: result.message });
       actionSucceeded = true;
 
-    // ===== START GAME =====
     } else if (action === "startgame") {
       gelly.points = 0;
       gelly.energy = 100;
       gelly.mood = 100;
       gelly.cleanliness = 100;
+      gelly.stage = "egg";
       gelly.lastUpdated = new Date();
       actionSucceeded = true;
 
@@ -341,7 +340,6 @@ app.post("/v1/interact", async (req, res) => {
       broadcastState(user, gelly);
       sendLeaderboard();
 
-      // Return full updated state so panel updates instantly
       return res.json({ 
         success: true, 
         newBalance: userPoints, 
@@ -351,53 +349,6 @@ app.post("/v1/interact", async (req, res) => {
 
   } catch (err) {
     console.error("[ERROR] /v1/interact:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
-// ===== GET Inventory =====
-app.get("/v1/state/:userId", async (req, res) => {
-  try {
-    let { userId } = req.params;
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
-
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
-    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
-
-    if (!userId || userId.startsWith("U")) {
-      gelly.displayName = "Guest Viewer";
-      gelly.loginName = "guest";
-    } else {
-      const twitchData = await fetchTwitchUserData(userId);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      }
-    }
-
-    // Ensure inventory exists
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-    }
-
-    await gelly.save();
-
-    // Send instant update
-    broadcastState(userId, gelly);
-
-    res.json({
-      success: true,
-      state: {
-        ...gelly.toObject(),
-        inventory: gelly.inventory // always include inventory
-      }
-    });
-  } catch (err) {
-    console.error(err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
