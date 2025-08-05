@@ -379,7 +379,7 @@ app.get("/v1/inventory/:userId", async (req, res) => {
             const realId = getRealTwitchId(req.headers.authorization);
             if (realId) userId = realId;
         }
-
+    const inventory = await db.getInventoryByUserId(userId);
         // Try to find Gelly
         let gelly = await Gelly.findOne({ userId });
 
