@@ -124,21 +124,37 @@ const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
 async function fetchTwitchUserData(userId) {
+
   try {
-    if (!userId || userId.startsWith("U")) return null;
-    const res = await fetch(`https://api.twitch.tv/helix/users?id=${userId}`, {
+
+    const cleanId = userId.startsWith("U") ? userId.substring(1) : userId;
+
+    const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
+
       headers: {
+
         "Client-ID": TWITCH_CLIENT_ID,
-        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`
-      }
+
+        "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}`,
+
+      },
+
     });
+
     if (!res.ok) return null;
+
     const data = await res.json();
+
     const user = data?.data?.[0];
+
     return user ? { displayName: user.display_name, loginName: user.login } : null;
+
   } catch {
+
     return null;
+
   }
+
 }
 
 function getRealTwitchId(authHeader) {
