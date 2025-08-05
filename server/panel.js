@@ -470,29 +470,53 @@ async function interact(action) {
     }
 }
 // ===== Init Game =====
+
 async function initGame() {
+
     console.log("Starting game for user:", twitchUserId);
+
     try {
+
         const res = await fetch(`https://gelly-server.onrender.com/v1/state/${twitchUserId}`, {
+
             method: "GET",
+
             headers: {
+
                 "Authorization": `Bearer ${twitchAuthToken}`,
+
                 "Content-Type": "application/json"
+
             }
+
         });
+
         if (res.ok) {
+
             const data = await res.json();
+
             if (data.success) {
+
                 updateUIFromState(data.state);
+
                 loginName = data.state.loginName;
+
                 await fetchJellybeanBalance();
-                startGame(); // ✅ Only show game after state loads
+
             }
+
         }
+
     } catch (err) {
+
         console.error("[ERROR] Fetching state failed:", err);
+
     }
+
     connectWebSocket();
+
+    startGame();
+
 }
 
 
@@ -604,3 +628,13 @@ document.getElementById("backFromStoreBtn").addEventListener("click", () => {
     document.getElementById("gelly-container").style.display = "block";
 });
 
+
+linkBtn.addEventListener("click", () => {
+
+    Twitch.ext.actions.requestIdShare();
+
+    localStorage.setItem("linkedOnce", "true"); // remember link
+
+    linkBtn.style.display = "none";
+
+    setTimeout(() => initGame(), 1000); // start after linking
