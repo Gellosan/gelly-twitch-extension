@@ -371,119 +371,114 @@ app.post("/v1/interact", async (req, res) => {
 
 // ===== FIXED: Get Inventory =====
 app.get("/v1/inventory/:userId", async (req, res) => {
-  try {
-    let { userId } = req.params;
+    try {
+        let { userId } = req.params;
 
-    // Resolve Twitch ID from auth token if provided
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
 
-    // Find or create Gelly entry
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) {
-      gelly = new Gelly({ userId, points: 0, inventory: [] });
-      await gelly.save();
-    }
+        let gelly = await Gelly.findOne({ userId });
+        if (!gelly) {
+            gelly = new Gelly({ userId, points: 0, inventory: [] });
+            await gelly.save();
+        }
 
-    // Ensure inventory exists
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-      await gelly.save();
-    }
- if (typeof gelly.applyDecay === "function") gelly.applyDecay();
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+            await gelly.save();
+        }
 
-
-
-        await gelly.save();
-
-
+        if (typeof gelly.applyDecay === "function") {
+            gelly.applyDecay();
+            await gelly.save();
+        }
 
         broadcastState(userId, gelly);
 
-
-
-        res.json({ success: true, state: { ...gelly.toObject(), inventory: gelly.inventory } });
+        res.json({ success: true, inventory: gelly.inventory });
 
     } catch (err) {
-
-        console.error(err);
-
+        console.error("[ERROR] GET /v1/inventory:", err);
         res.status(500).json({ success: false, message: "Server error" });
-    res.json({ success: true, inventory: gelly.inventory });
-  } catch (err) {
-    console.error("[ERROR] GET /v1/inventory:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
+    }
 });
 
 
 // ===== FIXED: Buy Item =====
 app.post("/v1/inventory/buy", async (req, res) => {
-  try {
-    const { itemId, name, type, cost, currency, transactionId } = req.body;
-    let { userId } = req.body;
+    try {
+        let { userId, itemId, name, type, cost, currency, transactionId } = req.body;
 
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        let gelly = await Gelly.findOne({ userId });
+        if (!gelly) {
+            gelly = new Gelly({ userId, points: 0, inventory: [] });
+        }
+
+        if (!gelly.loginName) {
+            const twitchData = await fetchTwitchUserData(userId);
+            if (twitchData) {
+                gelly.displayName = twitchData.displayName;
+                gelly.loginName = twitchData.loginName;
+            }
+        }
+
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+        }
+
+        // Validate store item to prevent fake data
+        const storeItem = storeItems.find(s => s.id === itemId);
+        if (!storeItem) {
+            return res.json({ success: false, message: "Invalid store item" });
+        }
+
+        name = storeItem.name;
+        type = storeItem.type;
+        cost = storeItem.cost;
+        currency = storeItem.currency;
+
+        // Payment check
+        if (currency === "jellybeans") {
+            const usernameForPoints = gelly.loginName || "guest";
+            let userPoints = await getUserPoints(usernameForPoints);
+            if (userPoints < cost) {
+                return res.json({ success: false, message: "Not enough Jellybeans" });
+            }
+            const newBal = await deductUserPoints(usernameForPoints, cost);
+            if (newBal === null) {
+                return res.json({ success: false, message: "Point deduction failed" });
+            }
+        } else if (currency === "bits") {
+            const valid = await verifyBitsTransaction(transactionId, userId);
+            if (!valid) {
+                return res.json({ success: false, message: "Bits payment not verified" });
+            }
+        } else {
+            return res.json({ success: false, message: "Invalid currency type" });
+        }
+
+        // Add to inventory if not already owned
+        if (!gelly.inventory.some(i => i.itemId === itemId)) {
+            gelly.inventory.push({ itemId, name, type, equipped: false });
+        }
+
+        await gelly.save();
+
+        res.json({ success: true, inventory: gelly.inventory });
+
+    } catch (err) {
+        console.error("[ERROR] POST /v1/inventory/buy:", err);
+        res.status(500).json({ success: false, message: "Server error" });
     }
-
-    // Always find or create a Gelly entry
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) {
-      gelly = new Gelly({ userId, points: 0, inventory: [] });
-    }
-
-    // Ensure loginName for points check
-    if (!gelly.loginName) {
-      const twitchData = await fetchTwitchUserData(userId);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      }
-    }
-
-    // Ensure inventory array exists
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-    }
-
-    // Currency check
-    if (currency === "jellybeans") {
-      const usernameForPoints = gelly.loginName || "guest";
-      let userPoints = await getUserPoints(usernameForPoints);
-      if (userPoints < cost) {
-        return res.json({ success: false, message: "Not enough Jellybeans" });
-      }
-
-      const newBal = await deductUserPoints(usernameForPoints, cost);
-      if (newBal === null) {
-        return res.json({ success: false, message: "Point deduction failed" });
-      }
-    } else if (currency === "bits") {
-      const valid = await verifyBitsTransaction(transactionId, userId);
-      if (!valid) {
-        return res.json({ success: false, message: "Bits payment not verified" });
-      }
-    } else {
-      return res.json({ success: false, message: "Invalid currency type" });
-    }
-
-    // Add to inventory if not already owned
-    if (!gelly.inventory.some(i => i.itemId === itemId)) {
-      gelly.inventory.push({ itemId, name, type, equipped: false });
-    }
-
-    await gelly.save();
-
-    res.json({ success: true, inventory: gelly.inventory });
-  } catch (err) {
-    console.error("[ERROR] POST /v1/inventory/buy:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
 });
+
         // Find store item so we have consistent data
 
         const storeItem = storeItems.find(s => s.id === itemId);
