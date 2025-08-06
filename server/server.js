@@ -390,17 +390,17 @@ app.get("/v1/inventory/:userId", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    await gelly.save();
+await gelly.save();
 
-    broadcastState(userId, gelly);
+broadcastState(userId, gelly);
 
-    res.json({ success: true, inventory: gelly.inventory });
+return res.json({ success: true, inventory: gelly.inventory });
 
-  } catch (err) {
+} catch (err) {
     console.error("[ERROR] GET /v1/inventory:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
+    return res.status(500).json({ success: false, message: "Server error" });
+}
+
 
 
 // ===== FIXED: Buy Item =====
@@ -470,24 +470,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
 
         res.json({ success: true, inventory: gelly.inventory });
 
-    } catch (err) {
-        console.error("[ERROR] POST /v1/inventory/buy:", err);
-        res.status(500).json({ success: false, message: "Server error" });
-    }
-});
-
-        // Find store item so we have consistent data
-
-        const storeItem = storeItems.find(s => s.id === itemId);
-
-        if (!storeItem) {
-
-            return res.json({ success: false, message: "Invalid store item" });
-
-        }
-
-
-
+   
         // Override name/type/cost/currency with store's values
 
         name = storeItem.name;
@@ -595,11 +578,14 @@ app.post("/v1/inventory/equip", async (req, res) => {
         }
 
         // If you want only ONE of the same type equipped, uncomment:
-         if (equipped) {
-             gelly.inventory.forEach(i => {
-                 if (i.type === item.type && i.itemId !== item.itemId) i.equipped = false;
-             });
-         }
+        if (equipped) {
+    gelly.inventory.forEach(i => {
+        if (i.type === item.type && i.itemId !== item.itemId) {
+            i.equipped = false;
+        }
+    });
+}
+
 
         // Set equipped state
         item.equipped = equipped;
