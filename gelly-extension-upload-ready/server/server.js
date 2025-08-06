@@ -9,6 +9,27 @@ const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 
 const app = express();
+const allowedOrigins = [
+  /\.ext-twitch\.tv$/,
+  /\.twitch\.tv$/,
+  /^localhost$/,
+  /^127\.0\.0\.1$/
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    try {
+      const hostname = new URL(origin).hostname;
+      if (allowedOrigins.some(pattern => pattern.test(hostname))) {
+        return callback(null, true);
+      }
+    } catch {}
+    console.warn(`🚫 CORS blocked origin: ${origin}`);
+    return callback(new Error("CORS not allowed"));
+  },
+  credentials: true
+}));
 
 // ===== Twitch Bot Setup =====
 const twitchClient = new tmi.Client({
@@ -371,36 +392,37 @@ app.post("/v1/interact", async (req, res) => {
 
 // ===== FIXED: Get Inventory =====
 app.get("/v1/inventory/:userId", async (req, res) => {
-  try {
-    let { userId } = req.params;
+    try {
+        let { userId } = req.params;
 
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        let gelly = await Gelly.findOne({ userId });
+        if (!gelly) {
+            gelly = new Gelly({ userId, points: 0, inventory: [] });
+        }
+
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+        }
+
+        if (typeof gelly.applyDecay === "function") gelly.applyDecay();
+
+        await gelly.save();
+
+        broadcastState(userId, gelly);
+
+        return res.json({ success: true, inventory: gelly.inventory });
+
+    } catch (err) {
+        console.error("[ERROR] GET /v1/inventory:", err);
+        return res.status(500).json({ success: false, message: "Server error" });
     }
-
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) {
-      gelly = new Gelly({ userId, points: 0, inventory: [] });
-    }
-
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-    }
-
-    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
-
-    await gelly.save();
-
-    broadcastState(userId, gelly);
-
-    res.json({ success: true, inventory: gelly.inventory });
-
-  } catch (err) {
-    console.error("[ERROR] GET /v1/inventory:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
 });
+
 
 
 // ===== FIXED: Buy Item =====
@@ -470,24 +492,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
 
         res.json({ success: true, inventory: gelly.inventory });
 
-    } catch (err) {
-        console.error("[ERROR] POST /v1/inventory/buy:", err);
-        res.status(500).json({ success: false, message: "Server error" });
-    }
-});
-
-        // Find store item so we have consistent data
-
-        const storeItem = storeItems.find(s => s.id === itemId);
-
-        if (!storeItem) {
-
-            return res.json({ success: false, message: "Invalid store item" });
-
-        }
-
-
-
+   
         // Override name/type/cost/currency with store's values
 
         name = storeItem.name;
@@ -595,11 +600,14 @@ app.post("/v1/inventory/equip", async (req, res) => {
         }
 
         // If you want only ONE of the same type equipped, uncomment:
-         if (equipped) {
-             gelly.inventory.forEach(i => {
-                 if (i.type === item.type && i.itemId !== item.itemId) i.equipped = false;
-             });
-         }
+        if (equipped) {
+    gelly.inventory.forEach(i => {
+        if (i.type === item.type && i.itemId !== item.itemId) {
+            i.equipped = false;
+        }
+    });
+}
+
 
         // Set equipped state
         item.equipped = equipped;
