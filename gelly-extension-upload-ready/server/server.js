@@ -392,7 +392,25 @@ app.get("/v1/inventory/:userId", async (req, res) => {
       gelly.inventory = [];
       await gelly.save();
     }
+ if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
+
+
+        await gelly.save();
+
+
+
+        broadcastState(userId, gelly);
+
+
+
+        res.json({ success: true, state: { ...gelly.toObject(), inventory: gelly.inventory } });
+
+    } catch (err) {
+
+        console.error(err);
+
+        res.status(500).json({ success: false, message: "Server error" });
     res.json({ success: true, inventory: gelly.inventory });
   } catch (err) {
     console.error("[ERROR] GET /v1/inventory:", err);
@@ -466,7 +484,55 @@ app.post("/v1/inventory/buy", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+        // Find store item so we have consistent data
 
+        const storeItem = storeItems.find(s => s.id === itemId);
+
+        if (!storeItem) {
+
+            return res.json({ success: false, message: "Invalid store item" });
+
+        }
+
+
+
+        // Override name/type/cost/currency with store's values
+
+        name = storeItem.name;
+
+        type = storeItem.type;
+
+        cost = storeItem.cost;
+
+        currency = storeItem.currency;
+
+ // Add item only if it's not already in inventory
+
+        if (!gelly.inventory.some(i => i.itemId === itemId)) {
+
+            gelly.inventory.push({ itemId, name, type, equipped: false });
+
+        }
+
+
+
+        await gelly.save();
+
+
+
+        res.json({ success: true, inventory: gelly.inventory });
+
+
+
+    } catch (err) {
+
+        console.error("[ERROR] POST /v1/inventory/buy:", err);
+
+        res.status(500).json({ success: false, message: "Server error" });
+
+    }
+
+});
 
 
 
@@ -515,46 +581,45 @@ app.get("/v1/store", (req, res) => {
 
 // ===== FIXED: Equip Item =====
 app.post("/v1/inventory/equip", async (req, res) => {
-  try {
-    const { itemId, equipped } = req.body;
-    let { userId } = req.body;
+    try {
+        let { userId, itemId, equipped } = req.body;
 
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        const gelly = await Gelly.findOne({ userId });
+        if (!gelly) return res.status(404).json({ success: false, message: "User not found" });
+
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+        }
+
+        // Find item ignoring case
+        const item = gelly.inventory.find(i => i.itemId.toLowerCase() === itemId.toLowerCase());
+        if (!item) {
+            return res.status(404).json({ success: false, message: "Item not found" });
+        }
+
+        if (equipped) {
+            // Unequip other items of same type
+            gelly.inventory.forEach(i => {
+                if (i.type === item.type) i.equipped = false;
+            });
+        }
+
+        item.equipped = equipped;
+
+        await gelly.save();
+        res.json({ success: true, inventory: gelly.inventory });
+
+    } catch (err) {
+        console.error("[ERROR] POST /v1/inventory/equip:", err);
+        res.status(500).json({ success: false, message: "Server error" });
     }
-
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) {
-      return res.status(404).json({ success: false, message: "User not found" });
-    }
-
-    // Ensure inventory exists
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-    }
-
-    const item = gelly.inventory.find(i => i.itemId === itemId);
-    if (!item) {
-      return res.status(404).json({ success: false, message: "Item not found" });
-    }
-
-    // Only one item of the same type can be equipped
-    if (equipped) {
-      gelly.inventory.forEach(i => {
-        if (i.type === item.type) i.equipped = false;
-      });
-    }
-
-    item.equipped = equipped;
-
-    await gelly.save();
-    res.json({ success: true, inventory: gelly.inventory });
-  } catch (err) {
-    console.error("[ERROR] POST /v1/inventory/equip:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
 });
+
 // ===== Admin Reset Leaderboard =====
 app.post("/v1/admin/reset-leaderboard", async (req, res) => {
   try {
