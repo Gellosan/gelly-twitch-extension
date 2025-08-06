@@ -641,3 +641,9 @@ server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
 app.get("/ping", (req, res) => {
     res.json({ success: true, message: "Server is awake" });
 });
+app.use(function(req, res, next) {
+  // Replace '*' with the specific origin if possible for better security
+  res.header("Access-Control-Allow-Origin", "https://b5wrjjllto7yl8i7g1h0oh9tz67i12.ext-twitch.tv");
+  res.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept");
+  next();
+});
