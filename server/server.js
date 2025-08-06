@@ -596,19 +596,20 @@ app.post("/v1/inventory/equip", async (req, res) => {
             gelly.inventory = [];
         }
 
-        // Find item ignoring case
+        // Find the specific item
         const item = gelly.inventory.find(i => i.itemId.toLowerCase() === itemId.toLowerCase());
         if (!item) {
             return res.status(404).json({ success: false, message: "Item not found" });
         }
 
-        if (equipped) {
-            // Unequip other items of same type
-            gelly.inventory.forEach(i => {
-                if (i.type === item.type) i.equipped = false;
-            });
-        }
+        // If you want only ONE of the same type equipped, uncomment:
+         if (equipped) {
+             gelly.inventory.forEach(i => {
+                 if (i.type === item.type && i.itemId !== item.itemId) i.equipped = false;
+             });
+         }
 
+        // Set equipped state
         item.equipped = equipped;
 
         await gelly.save();
@@ -619,6 +620,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
         res.status(500).json({ success: false, message: "Server error" });
     }
 });
+
 
 // ===== Admin Reset Leaderboard =====
 app.post("/v1/admin/reset-leaderboard", async (req, res) => {
