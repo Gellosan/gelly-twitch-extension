@@ -371,35 +371,36 @@ app.post("/v1/interact", async (req, res) => {
 
 // ===== FIXED: Get Inventory =====
 app.get("/v1/inventory/:userId", async (req, res) => {
-  try {
-    let { userId } = req.params;
+    try {
+        let { userId } = req.params;
 
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
+        if (req.headers.authorization) {
+            const realId = getRealTwitchId(req.headers.authorization);
+            if (realId) userId = realId;
+        }
+
+        let gelly = await Gelly.findOne({ userId });
+        if (!gelly) {
+            gelly = new Gelly({ userId, points: 0, inventory: [] });
+        }
+
+        if (!Array.isArray(gelly.inventory)) {
+            gelly.inventory = [];
+        }
+
+        if (typeof gelly.applyDecay === "function") gelly.applyDecay();
+
+        await gelly.save();
+
+        broadcastState(userId, gelly);
+
+        return res.json({ success: true, inventory: gelly.inventory });
+
+    } catch (err) {
+        console.error("[ERROR] GET /v1/inventory:", err);
+        return res.status(500).json({ success: false, message: "Server error" });
     }
-
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) {
-      gelly = new Gelly({ userId, points: 0, inventory: [] });
-    }
-
-    if (!Array.isArray(gelly.inventory)) {
-      gelly.inventory = [];
-    }
-
-    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
-
-await gelly.save();
-
-broadcastState(userId, gelly);
-
-return res.json({ success: true, inventory: gelly.inventory });
-
-} catch (err) {
-    console.error("[ERROR] GET /v1/inventory:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
-}
+});
 
 
 
