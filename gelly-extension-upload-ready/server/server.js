@@ -7,7 +7,7 @@ require("dotenv").config();
 const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
-
+app.use(cors());
 const app = express();
 const allowedOrigins = [
   /\.ext-twitch\.tv$/,
