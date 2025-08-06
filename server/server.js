@@ -9,6 +9,27 @@ const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 
 const app = express();
+const allowedOrigins = [
+  /\.ext-twitch\.tv$/,
+  /\.twitch\.tv$/,
+  /^localhost$/,
+  /^127\.0\.0\.1$/
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+    try {
+      const hostname = new URL(origin).hostname;
+      if (allowedOrigins.some(pattern => pattern.test(hostname))) {
+        return callback(null, true);
+      }
+    } catch {}
+    console.warn(`🚫 CORS blocked origin: ${origin}`);
+    return callback(new Error("CORS not allowed"));
+  },
+  credentials: true
+}));
 
 // ===== Twitch Bot Setup =====
 const twitchClient = new tmi.Client({
