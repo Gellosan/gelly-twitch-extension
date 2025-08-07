@@ -16,20 +16,32 @@ const allowedOrigins = [
   /^127\.0\.0\.1$/
 ];
 
+// ===== FIXED: Flexible CORS config =====
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true);
     try {
       const hostname = new URL(origin).hostname;
-      if (allowedOrigins.some(pattern => pattern.test(hostname))) {
+      if (
+        /\.ext-twitch\.tv$/.test(hostname) ||
+        /\.twitch\.tv$/.test(hostname) ||
+        hostname === "localhost" ||
+        hostname === "127.0.0.1"
+      ) {
         return callback(null, true);
       }
-    } catch {}
+    } catch (err) {
+      console.error("CORS origin parse error:", err);
+    }
     console.warn(`🚫 CORS blocked origin: ${origin}`);
-    return callback(new Error("CORS not allowed"));
+    callback(new Error("CORS not allowed"));
   },
+  methods: ["GET", "POST", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
   credentials: true
 }));
+
+app.options("*", cors());
 app.use(cors());
 // ===== Twitch Bot Setup =====
 const twitchClient = new tmi.Client({
