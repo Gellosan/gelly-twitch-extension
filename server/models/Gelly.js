@@ -1,6 +1,17 @@
 // ===== Gelly Model =====
 const mongoose = require("mongoose");
 
+// Subdocument for inventory items
+const InventoryItemSchema = new mongoose.Schema(
+  {
+    itemId: { type: String, required: true },
+    name: String,
+    type: String, // e.g., "hat", "glasses"
+    equipped: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
 const GellySchema = new mongoose.Schema({
   userId: { type: String, required: true, unique: true },
   displayName: String,
@@ -12,7 +23,10 @@ const GellySchema = new mongoose.Schema({
   color: { type: String, default: "blue" },
   points: { type: Number, default: 0 },
   lastUpdated: { type: Date, default: Date.now },
-  lastActionTimes: { type: Map, of: Date, default: {} }
+  lastActionTimes: { type: Map, of: Date, default: {} },
+
+  // 🆕 Inventory feature
+  inventory: { type: [InventoryItemSchema], default: [] },
 });
 
 GellySchema.methods.applyDecay = function () {
@@ -39,6 +53,7 @@ GellySchema.methods.checkGrowth = function () {
   }
 };
 
+// Only updates cooldown when successful
 GellySchema.methods.updateStats = function (action) {
   const MAX_STAT = 500;
   let success = false;
@@ -61,6 +76,7 @@ GellySchema.methods.updateStats = function (action) {
   }
 
   if (success) {
+    // NOTE: lastActionTimes is a Map, use set/get in server code
     this.lastActionTimes.set(action, new Date());
     this.checkGrowth();
   }
@@ -69,4 +85,3 @@ GellySchema.methods.updateStats = function (action) {
 };
 
 module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
-
