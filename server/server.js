@@ -7,13 +7,36 @@ require("dotenv").config();
 const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
-const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 // ----- App -----
 const app = express();
 app.use(express.json());
 
 // ===== CORS (single source of truth) =====
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin || "";
+  // Allow Twitch extension + localhost
+  const ok =
+    /(^|\.)ext-twitch\.tv$/.test(new URL(origin).hostname || "") ||
+    /(^|\.)twitch\.tv$/.test(new URL(origin).hostname || "") ||
+    origin.startsWith("http://localhost") ||
+    origin.startsWith("http://127.0.0.1") ||
+    origin.startsWith("https://localhost") ||
+    origin.startsWith("https://127.0.0.1");
+
+  if (origin && ok) {
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Origin", origin); // echo origin (needed with credentials)
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  }
+
+  if (req.method === "OPTIONS") return res.sendStatus(204); // important for preflight
+  next();
+});
+
 app.use(cors({
   origin: (origin, callback) => {
     if (!origin) return callback(null, true); // server-to-server, curl, etc.
@@ -39,12 +62,6 @@ app.use(cors({
 }));
 app.options("*", cors());
 
-// ===== MongoDB =====
-mongoose
-  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ Mongo Error:", err));
-
 // ===== Twitch Bot Setup =====
 const twitchClient = new tmi.Client({
   identity: {
@@ -57,6 +74,12 @@ const twitchClient = new tmi.Client({
 twitchClient.connect()
   .then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME))
   .catch(console.error);
+
+// ===== MongoDB =====
+mongoose
+  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("❌ Mongo Error:", err));
 
 // ===== WebSocket =====
 const server = require("http").createServer(app);
@@ -96,6 +119,15 @@ async function sendLeaderboard() {
       g.applyDecay();
       await g.save();
     }
+
+    if (!g.displayName || !g.loginName || g.loginName === "unknown") {
+      const twitchData = await fetchTwitchUserData(g.userId);
+      if (twitchData) {
+        g.displayName = twitchData.displayName;
+        g.loginName = twitchData.loginName;
+        await g.save();
+      }
+    }
   }
 
   const leaderboard = gellys
@@ -115,6 +147,7 @@ async function sendLeaderboard() {
 }
 
 // ===== Helpers =====
+const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
@@ -148,6 +181,7 @@ function getRealTwitchId(authHeader) {
   }
 }
 
+// --- tiny fetch timeout helper
 async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
@@ -193,9 +227,8 @@ async function deductUserPoints(username, amount) {
     const current = await getUserPoints(username);
     const newTotal = Math.max(0, current - Math.abs(amount));
     const cmd = `!setpoints ${username} ${newTotal}`;
-
-    // Why IRC? StreamElements REST points write is restricted; the bot command is the supported route.
     console.log("[IRC] →", cmd);
+
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise(r => setTimeout(r, 1500));
 
@@ -203,31 +236,6 @@ async function deductUserPoints(username, amount) {
   } catch (err) {
     console.error("[deductUserPoints] error:", err);
     return null;
-  }
-}
-
-// ===== Store Config (moved up so routes can use it) =====
-const storeItems = [
-  { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
-  { id: "party-hat",    name: "Party Hat",    type: "hat",       cost: 300000, currency: "jellybeans" },
-  { id: "sunglasses",   name: "Sunglasses",   type: "accessory", cost: 100000, currency: "jellybeans" },
-  { id: "wizard-hat",   name: "Wizard Hat",   type: "hat",       cost: 500000, currency: "jellybeans" },
-  { id: "flower-crown", name: "Flower Crown", type: "hat",       cost: 500000, currency: "jellybeans" },
-  { id: "bat",          name: "Baseball Bat", type: "weapon",    cost: 500000, currency: "jellybeans" },
-  { id: "gold-crown",   name: "Gold Crown",   type: "hat",       cost: 100,    currency: "bits" },
-  { id: "sword",        name: "Sword",        type: "weapon",    cost: 100,    currency: "bits" },
-  { id: "king-crown",   name: "Royal Crown",  type: "hat",       cost: 100,    currency: "bits" },
-  { id: "gun",          name: "M4",           type: "weapon",    cost: 100,    currency: "bits" },
-];
-
-// ===== Normalizers =====
-function normalizeInventory(gelly) {
-  if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
-}
-function normalizeLastActionTimes(gelly) {
-  // Why: avoid Map vs Object mismatch in Mongo serialization.
-  if (!gelly.lastActionTimes || typeof gelly.lastActionTimes !== "object" || Array.isArray(gelly.lastActionTimes)) {
-    gelly.lastActionTimes = {};
   }
 }
 
@@ -242,9 +250,6 @@ app.get("/v1/state/:userId", async (req, res) => {
 
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
-    normalizeLastActionTimes(gelly);
-    normalizeInventory(gelly);
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
@@ -263,8 +268,7 @@ app.get("/v1/state/:userId", async (req, res) => {
     broadcastState(userId, gelly);
 
     return res.json({ success: true, state: gelly });
-  } catch (err) {
-    console.error("[ERROR] GET /v1/state:", err);
+  } catch {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
@@ -273,8 +277,7 @@ app.get("/v1/points/:username", async (req, res) => {
   try {
     const points = await getUserPoints(req.params.username);
     return res.json({ success: true, points });
-  } catch (err) {
-    console.error("[ERROR] GET /v1/points:", err);
+  } catch {
     return res.status(500).json({ success: false, points: 0 });
   }
 });
@@ -290,9 +293,6 @@ app.post("/v1/interact", async (req, res) => {
 
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
-
-    normalizeLastActionTimes(gelly);
-    normalizeInventory(gelly);
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
@@ -316,15 +316,16 @@ app.post("/v1/interact", async (req, res) => {
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
-    const now = Date.now();
+    const now = new Date();
 
-    const lastMs = gelly.lastActionTimes[cooldownKey] ? new Date(gelly.lastActionTimes[cooldownKey]).getTime() : 0;
-    if (lastMs && now - lastMs < cooldown) {
-      const remaining = Math.ceil((cooldown - (now - lastMs)) / 1000);
-      return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
-    }
+   const last = gelly.lastActionTimes.get(cooldownKey);
+if (last && now - last < cooldown) {
+  const remaining = Math.ceil((cooldown - (now - last)) / 1000);
+  return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
+}
 
-    gelly.lastActionTimes[cooldownKey] = new Date(now);
+
+gelly.lastActionTimes.set(cooldownKey, now);
 
     let actionSucceeded = false;
 
@@ -377,13 +378,21 @@ app.post("/v1/interact", async (req, res) => {
     }
 
     if (actionSucceeded) {
+      gelly.lastActionTimes[cooldownKey] = now;
       await gelly.save();
+
       broadcastState(user, gelly);
       sendLeaderboard();
-      return res.json({ success: true, newBalance: userPoints, state: gelly });
+
+      return res.json({
+        success: true,
+        newBalance: userPoints,
+        state: gelly
+      });
     }
+
   } catch (err) {
-    console.error("[ERROR] POST /v1/interact:", err);
+    console.error("[ERROR] /v1/interact:", err);
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
@@ -400,8 +409,7 @@ app.get("/v1/inventory/:userId", async (req, res) => {
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
 
-    normalizeInventory(gelly);
-    normalizeLastActionTimes(gelly);
+    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
@@ -436,8 +444,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
       }
     }
 
-    normalizeInventory(gelly);
-    normalizeLastActionTimes(gelly);
+    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
 
     // Validate store item to prevent fake data
     const storeItem = storeItems.find(s => s.id === itemId);
@@ -471,9 +478,6 @@ app.post("/v1/inventory/buy", async (req, res) => {
     }
 
     await gelly.save();
-    broadcastState(userId, gelly);
-    sendLeaderboard();
-
     return res.json({ success: true, inventory: gelly.inventory });
 
   } catch (err) {
@@ -495,8 +499,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
     const gelly = await Gelly.findOne({ userId });
     if (!gelly) return res.status(404).json({ success: false, message: "User not found" });
 
-    normalizeInventory(gelly);
-    normalizeLastActionTimes(gelly);
+    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
 
     // Find the specific item (case-insensitive)
     const item = gelly.inventory.find(i => (i.itemId || "").toLowerCase() === (itemId || "").toLowerCase());
@@ -509,11 +512,9 @@ app.post("/v1/inventory/equip", async (req, res) => {
       });
     }
 
-    item.equipped = !!equipped;
+    item.equipped = equipped;
 
     await gelly.save();
-    broadcastState(userId, gelly);
-
     return res.json({ success: true, inventory: gelly.inventory });
 
   } catch (err) {
@@ -521,6 +522,20 @@ app.post("/v1/inventory/equip", async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
+// =====Store Config =====
+const storeItems = [
+  { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
+  { id: "party-hat",    name: "Party Hat",    type: "hat",       cost: 300000, currency: "jellybeans" },
+  { id: "sunglasses",   name: "Sunglasses",   type: "accessory", cost: 100000, currency: "jellybeans" },
+  { id: "wizard-hat",   name: "Wizard Hat",   type: "hat",       cost: 500000, currency: "jellybeans" },
+  { id: "flower-crown", name: "Flower Crown", type: "hat",       cost: 500000, currency: "jellybeans" },
+  { id: "bat",          name: "Baseball Bat", type: "weapon",    cost: 500000, currency: "jellybeans" },
+  { id: "gold-crown",   name: "Gold Crown",   type: "hat",       cost: 100,    currency: "bits" },
+  { id: "sword",        name: "Sword",        type: "weapon",    cost: 100,    currency: "bits" },
+  { id: "king-crown",   name: "Royal Crown",  type: "hat",       cost: 100,    currency: "bits" },
+  { id: "gun",          name: "M4",           type: "weapon",    cost: 100,    currency: "bits" },
+];
 
 app.get("/v1/store", (req, res) => {
   return res.json({ success: true, store: storeItems });
@@ -561,7 +576,7 @@ async function verifyBitsTransaction(transactionId, userId) {
     const data = await res.json();
     const tx = data.data && data.data[0];
 
-    return !!(tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION");
+    return tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION";
   } catch (err) {
     console.error("verifyBitsTransaction error:", err);
     return false;
