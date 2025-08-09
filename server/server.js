@@ -294,10 +294,14 @@ app.post("/v1/interact", async (req, res) => {
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
     const now = new Date();
 
-    if (gelly.lastActionTimes[cooldownKey] && now - gelly.lastActionTimes[cooldownKey] < cooldown) {
-      const remaining = Math.ceil((cooldown - (now - gelly.lastActionTimes[cooldownKey])) / 1000);
-      return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
-    }
+   const last = gelly.lastActionTimes.get(cooldownKey);
+if (last && now - last < cooldown) {
+  const remaining = Math.ceil((cooldown - (now - last)) / 1000);
+  return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
+}
+
+
+gelly.lastActionTimes.set(cooldownKey, now);
 
     let actionSucceeded = false;
 
@@ -495,7 +499,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
   }
 });
 
-// ===== Example Store Config =====
+// =====Store Config =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
   { id: "party-hat",    name: "Party Hat",    type: "hat",       cost: 300000, currency: "jellybeans" },
