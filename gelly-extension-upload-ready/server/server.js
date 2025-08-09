@@ -14,53 +14,44 @@ app.use(express.json());
 
 // ===== CORS (single source of truth) =====
 
+// put this RIGHT AFTER: const app = express(); app.use(express.json());
+// and REMOVE your previous `app.use(cors(...))` + `app.options("*", cors())`
+
+function isAllowedOrigin(origin) {
+  if (!origin) return true; // server-to-server, health checks, etc.
+
+  // Extract hostname without using URL()
+  // e.g. "https://foo.ext-twitch.tv" -> "foo.ext-twitch.tv"
+  const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+
+  // Allow Twitch extension and Twitch domains, plus localhost for dev
+  if (
+    /\.ext-twitch\.tv$/.test(host) ||
+    /\.twitch\.tv$/.test(host) ||
+    host === "localhost" ||
+    host.startsWith("localhost:") ||
+    host === "127.0.0.1" ||
+    host.startsWith("127.0.0.1:")
+  ) return true;
+
+  return false;
+}
+
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
-  // Allow Twitch extension + localhost
-  const ok =
-    /(^|\.)ext-twitch\.tv$/.test(new URL(origin).hostname || "") ||
-    /(^|\.)twitch\.tv$/.test(new URL(origin).hostname || "") ||
-    origin.startsWith("http://localhost") ||
-    origin.startsWith("http://127.0.0.1") ||
-    origin.startsWith("https://localhost") ||
-    origin.startsWith("https://127.0.0.1");
 
-  if (origin && ok) {
+  if (isAllowedOrigin(origin)) {
+    // echo the caller's origin when allowed (needed with credentials)
     res.setHeader("Vary", "Origin");
-    res.setHeader("Access-Control-Allow-Origin", origin); // echo origin (needed with credentials)
+    if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With");
   }
 
-  if (req.method === "OPTIONS") return res.sendStatus(204); // important for preflight
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
-
-app.use(cors({
-  origin: (origin, callback) => {
-    if (!origin) return callback(null, true); // server-to-server, curl, etc.
-    try {
-      const hostname = new URL(origin).hostname;
-      if (
-        /\.ext-twitch\.tv$/.test(hostname) ||
-        /\.twitch\.tv$/.test(hostname) ||
-        hostname === "localhost" ||
-        hostname === "127.0.0.1"
-      ) {
-        return callback(null, true);
-      }
-    } catch (err) {
-      console.error("CORS origin parse error:", err);
-    }
-    console.warn(`🚫 CORS blocked origin: ${origin}`);
-    return callback(new Error("CORS not allowed"));
-  },
-  methods: ["GET", "POST", "OPTIONS"],
-  allowedHeaders: ["Content-Type", "Authorization"],
-  credentials: true,
-}));
-app.options("*", cors());
 
 // ===== Twitch Bot Setup =====
 const twitchClient = new tmi.Client({
