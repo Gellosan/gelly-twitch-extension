@@ -1,4 +1,3 @@
-
 // ===== Gelly Server =====
 const express = require("express");
 const mongoose = require("mongoose");
@@ -9,7 +8,6 @@ const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
-// ----- App -----
 const app = express();
 app.use(express.json());
 
@@ -17,15 +15,14 @@ app.use(express.json());
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
-  if (
+  return (
     /\.ext-twitch\.tv$/.test(host) ||
     /\.twitch\.tv$/.test(host) ||
     host === "localhost" ||
     host.startsWith("localhost:") ||
     host === "127.0.0.1" ||
     host.startsWith("127.0.0.1:")
-  ) return true;
-  return false;
+  );
 }
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
@@ -40,27 +37,18 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===== Request logger =====
-app.use((req, _res, next) => {
-  console.log(`[REQ] ${req.method} ${req.path}`);
-  next();
-});
+// tiny req logger
+app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
 
-// ===== Twitch Bot Setup =====
+// ===== Twitch Bot =====
 const twitchClient = new tmi.Client({
-  identity: {
-    username: process.env.TWITCH_BOT_USERNAME,
-    password: process.env.TWITCH_OAUTH_TOKEN
-  },
-  channels: [process.env.TWITCH_CHANNEL_NAME]
+  identity: { username: process.env.TWITCH_BOT_USERNAME, password: process.env.TWITCH_OAUTH_TOKEN },
+  channels: [process.env.TWITCH_CHANNEL_NAME],
 });
-twitchClient.connect()
-  .then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME))
-  .catch(console.error);
+twitchClient.connect().then(() => console.log("✅ Connected to Twitch chat")).catch(console.error);
 
 // ===== MongoDB =====
-mongoose
-  .connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB connected"))
   .catch(err => console.error("❌ Mongo Error:", err));
 
@@ -78,27 +66,19 @@ wss.on("connection", (ws, req) => {
     sendLeaderboard().catch(console.error);
   }
   ws.on("close", () => {
-    if (userId) {
-      clients.delete(userId);
-      console.log(`❌ WebSocket disconnected for user: ${userId}`);
-    }
+    if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
   });
 });
 
 function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
-  }
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "update", state: gelly }));
 }
 
 async function sendLeaderboard() {
   const gellys = await Gelly.find();
   for (const g of gellys) {
-    if (typeof g.applyDecay === "function") {
-      g.applyDecay();
-      await g.save();
-    }
+    if (typeof g.applyDecay === "function") { g.applyDecay(); await g.save(); }
   }
   const leaderboard = gellys
     .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
@@ -107,11 +87,10 @@ async function sendLeaderboard() {
       loginName: g.loginName || "unknown",
       score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0)),
     }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10);
+    .sort((a, b) => b.score - a.score).slice(0, 10);
 
-  const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
-  for (const [, ws] of clients) if (ws.readyState === WebSocket.OPEN) ws.send(data);
+  const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+  for (const [, s] of clients) if (s.readyState === WebSocket.OPEN) s.send(payload);
 }
 
 // ===== Helpers =====
@@ -130,47 +109,30 @@ async function fetchTwitchUserData(userId) {
     });
     if (!res.ok) return null;
     const data = await res.json();
-    const user = data?.data?.[0];
-    return user ? { displayName: user.display_name, loginName: user.login } : null;
-  } catch {
-    return null;
-  }
+    const u = data?.data?.[0];
+    return u ? { displayName: u.display_name, loginName: u.login } : null;
+  } catch { return null; }
 }
 function getRealTwitchId(authHeader) {
   if (!authHeader) return null;
-  const token = authHeader.split(" ")[1];
-  try {
-    const decoded = jwt.decode(token);
-    return decoded?.user_id || null;
-  } catch {
-    return null;
-  }
+  try { return (jwt.decode(authHeader.split(" ")[1])?.user_id) || null; } catch { return null; }
 }
 async function fetchWithTimeout(makeReq, ms = 2500) {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), ms);
-  try {
-    const res = await makeReq(ctrl.signal);
-    clearTimeout(timer);
-    return res;
-  } catch (e) {
-    clearTimeout(timer);
-    throw e;
-  }
+  const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
+  try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
 }
 async function getUserPoints(username) {
   try {
     if (!username || username === "guest" || username === "unknown") return 0;
     const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
     const res = await fetchWithTimeout(
-      (signal) => fetch(url, { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` }, signal }), 2500
+      (signal) => fetch(url, { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` }, signal }),
+      2500
     );
     if (!res.ok) return 0;
     const data = await res.json();
     return typeof data?.points === "number" ? data.points : 0;
-  } catch {
-    return 0;
-  }
+  } catch { return 0; }
 }
 async function deductUserPoints(username, amount) {
   try {
@@ -181,12 +143,10 @@ async function deductUserPoints(username, amount) {
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise(r => setTimeout(r, 1500));
     return newTotal;
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
-// ===== Store Config =====
+// ===== Store (source of truth) =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
   { id: "party-hat",    name: "Party Hat",    type: "hat",       cost: 300000, currency: "jellybeans" },
@@ -200,245 +160,154 @@ const storeItems = [
   { id: "gun",          name: "M4",           type: "weapon",    cost: 100,    currency: "bits" },
 ];
 
-// ===== Normalizers & cooldown helpers =====
-function normalizeInventory(gelly) {
-  if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
-}
-function ensureCooldownContainer(gelly) {
-  if (!gelly.lastActionTimes || typeof gelly.lastActionTimes !== "object") {
-    if (gelly.lastActionTimes instanceof Map) gelly.lastActionTimes = Object.fromEntries(gelly.lastActionTimes);
-    else gelly.lastActionTimes = {};
-  }
-}
-function getCooldown(gelly, key) {
-  const lat = gelly.lastActionTimes;
-  if (!lat) return null;
-  if (lat instanceof Map) return lat.get(key) || null;
-  const v = lat[key];
-  return v ? new Date(v) : null;
-}
-function setCooldown(gelly, key, when) {
-  if (gelly.lastActionTimes instanceof Map) gelly.lastActionTimes.set(key, when);
-  else gelly.lastActionTimes[key] = when;
-}
-
-// ===== API Routes =====
+// ===== API =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     let { userId } = req.params;
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
+    const realId = getRealTwitchId(req.headers.authorization);
+    if (realId) userId = realId;
+
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
-    ensureCooldownContainer(gelly);
-    normalizeInventory(gelly);
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
     if (!userId || userId.startsWith("U")) {
-      gelly.displayName = "Guest Viewer";
-      gelly.loginName = "guest";
+      gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
     } else {
-      const twitchData = await fetchTwitchUserData(userId);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      }
+      const td = await fetchTwitchUserData(userId);
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
 
     await gelly.save();
     broadcastState(userId, gelly);
-    return res.json({ success: true, state: gelly });
-  } catch (err) {
-    console.error("[ERROR] GET /v1/state:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.json({ success: true, state: gelly });
+  } catch (e) {
+    console.error("[/v1/state] error", e);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
 app.get("/v1/points/:username", async (req, res) => {
-  try {
-    const points = await getUserPoints(req.params.username);
-    return res.json({ success: true, points });
-  } catch (err) {
-    console.error("[ERROR] GET /v1/points:", err);
-    return res.status(500).json({ success: false, points: 0 });
-  }
+  try { res.json({ success: true, points: await getUserPoints(req.params.username) }); }
+  catch { res.status(500).json({ success: false, points: 0 }); }
 });
 
+// ---- Interact (unchanged logic) ----
 app.post("/v1/interact", async (req, res) => {
   try {
     let { user, action } = req.body;
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) user = realId;
-    }
+    const realId = getRealTwitchId(req.headers.authorization);
+    if (realId) user = realId;
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await Gelly.findOne({ userId: user });
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
-
-    ensureCooldownContainer(gelly);
-    normalizeInventory(gelly);
-
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
     if (!user || user.startsWith("U")) {
-      gelly.displayName = "Guest Viewer";
-      gelly.loginName = "guest";
+      gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
     } else {
-      const twitchData = await fetchTwitchUserData(user);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      }
+      const td = await fetchTwitchUserData(user);
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
-
     await gelly.save();
 
     const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
-    const cooldownKey = action.startsWith("color:") ? "color" : action;
-    const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
+    const key = action.startsWith("color:") ? "color" : action;
+    const cooldown = ACTION_COOLDOWNS[key] || 60000;
     const now = new Date();
-
-    const last = getCooldown(gelly, cooldownKey);
+    const last = gelly.lastActionTimes?.get?.(key) || null;
     if (last && now - last < cooldown) {
       const remaining = Math.ceil((cooldown - (now - last)) / 1000);
-      return res.json({ success: false, message: `Please wait ${remaining}s before ${cooldownKey} again.` });
+      return res.json({ success: false, message: `Please wait ${remaining}s before ${key} again.` });
     }
+    gelly.lastActionTimes?.set?.(key, now);
 
-    setCooldown(gelly, cooldownKey, now);
-
-    let actionSucceeded = false;
-
+    let ok = false;
     if (action === "feed") {
       const cost = 10000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-      const newBal = await deductUserPoints(usernameForPoints, cost);
-      if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-      userPoints = newBal;
-
-      const result = gelly.updateStats("feed");
-      if (!result.success) return res.json({ success: false, message: result.message });
-      actionSucceeded = true;
-
+      const nb = await deductUserPoints(usernameForPoints, cost);
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      userPoints = nb;
+      ok = gelly.updateStats("feed").success;
     } else if (action.startsWith("color:")) {
       const cost = 50000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      const newBal = await deductUserPoints(usernameForPoints, cost);
-      if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-      userPoints = newBal;
-
+      const nb = await deductUserPoints(usernameForPoints, cost);
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      userPoints = nb;
       gelly.color = action.split(":")[1] || "blue";
-      actionSucceeded = true;
-
+      ok = true;
     } else if (action === "play") {
-      const result = gelly.updateStats("play");
-      if (!result.success) return res.json({ success: false, message: result.message });
-      actionSucceeded = true;
-
+      ok = gelly.updateStats("play").success;
     } else if (action === "clean") {
-      const result = gelly.updateStats("clean");
-      if (!result.success) return res.json({ success: false, message: result.message });
-      actionSucceeded = true;
-
+      ok = gelly.updateStats("clean").success;
     } else if (action === "startgame") {
-      gelly.points = 0;
-      gelly.energy = 100;
-      gelly.mood = 100;
-      gelly.cleanliness = 100;
-      gelly.stage = "egg";
-      gelly.lastUpdated = new Date();
-      actionSucceeded = true;
-
+      gelly.points = 0; gelly.energy = 100; gelly.mood = 100; gelly.cleanliness = 100; gelly.stage = "egg"; gelly.lastUpdated = new Date();
+      ok = true;
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
 
-    if (actionSucceeded) {
-      await gelly.save();
-      broadcastState(user, gelly);
-      sendLeaderboard();
-      return res.json({ success: true, newBalance: userPoints, state: gelly });
-    }
+    if (!ok) return res.json({ success: false, message: "Action failed" });
+    await gelly.save();
+    broadcastState(user, gelly);
+    sendLeaderboard();
+    res.json({ success: true, newBalance: userPoints, state: gelly });
   } catch (err) {
-    console.error("[ERROR] POST /v1/interact:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    console.error("[ERROR] /v1/interact:", err);
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// ===== Get Inventory =====
+// ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
   try {
     let { userId } = req.params;
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
+    const realId = getRealTwitchId(req.headers.authorization);
+    if (realId) userId = realId;
 
     let gelly = await Gelly.findOne({ userId });
     if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
-
-    ensureCooldownContainer(gelly);
-    normalizeInventory(gelly);
-
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
-
     await gelly.save();
     broadcastState(userId, gelly);
-
-    return res.json({ success: true, inventory: gelly.inventory });
+    res.json({ success: true, inventory: gelly.inventory || [] });
   } catch (err) {
     console.error("[ERROR] GET /v1/inventory:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// ===== Buy Item =====
+// ---- Buy (ATOMIC: $addToSet prevents overwrite) ----
 app.post("/v1/inventory/buy", async (req, res) => {
   try {
     let { userId, itemId, name, type, cost, currency, transactionId } = req.body;
+    const realId = getRealTwitchId(req.headers.authorization);
+    if (realId) userId = realId;
 
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
-
+    // Ensure user doc exists & twitch names
     let gelly = await Gelly.findOne({ userId });
-    if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
+    if (!gelly) gelly = await Gelly.create({ userId, points: 0, inventory: [] });
 
     if (!gelly.loginName) {
-      const twitchData = await fetchTwitchUserData(userId);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
-      } else {
-        gelly.displayName = gelly.displayName || "Guest Viewer";
-        gelly.loginName = gelly.loginName || "guest";
-      }
+      const td = await fetchTwitchUserData(userId);
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; await gelly.save(); }
+      else if (!gelly.loginName) { gelly.displayName = "Guest Viewer"; gelly.loginName = "guest"; await gelly.save(); }
     }
-
-    ensureCooldownContainer(gelly);
-    normalizeInventory(gelly);
 
     const storeItem = storeItems.find(s => s.id === itemId);
     if (!storeItem) return res.json({ success: false, message: "Invalid store item" });
-
-    name = storeItem.name;
-    type = storeItem.type;
-    cost = storeItem.cost;
-    currency = storeItem.currency;
+    name = storeItem.name; type = storeItem.type; cost = storeItem.cost; currency = storeItem.currency;
 
     if (currency === "jellybeans") {
       const isGuest = !gelly.loginName || gelly.loginName === "guest" || gelly.loginName === "unknown";
-      if (isGuest && ALLOW_GUEST_PURCHASES) {
-        console.log("[BUY] Guest purchase allowed by ALLOW_GUEST_PURCHASES");
-      } else {
+      if (!(isGuest && ALLOW_GUEST_PURCHASES)) {
         const usernameForPoints = gelly.loginName || "guest";
         const userPoints = await getUserPoints(usernameForPoints);
         if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans" });
@@ -452,116 +321,75 @@ app.post("/v1/inventory/buy", async (req, res) => {
       return res.json({ success: false, message: "Invalid currency type" });
     }
 
-    if (!gelly.inventory.some(i => i.itemId === itemId)) {
-      gelly.inventory.push({ itemId, name, type, equipped: false });
-      console.log("[BUY] Added:", { userId, itemId });
-    }
+    // Atomic add; avoids losing previous items when concurrent requests race
+    await Gelly.updateOne(
+      { userId },
+      { $addToSet: { inventory: { itemId, name, type, equipped: false } } }
+    );
 
-    await gelly.save();
-    broadcastState(userId, gelly);
+    const updated = await Gelly.findOne({ userId });
+    broadcastState(userId, updated);
     sendLeaderboard();
-
-    return res.json({ success: true, inventory: gelly.inventory });
+    res.json({ success: true, inventory: updated.inventory || [] });
   } catch (err) {
     console.error("[ERROR] POST /v1/inventory/buy:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// ===== Equip Item =====
+// ---- Equip (ATOMIC: arrayFilters) ----
 app.post(/^\/v1\/inventory\/equip\/?$/, async (req, res) => {
   try {
     let { userId, itemId, equipped } = req.body;
-
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
+    const realId = getRealTwitchId(req.headers.authorization);
+    if (realId) userId = realId;
 
     const gelly = await Gelly.findOne({ userId });
     if (!gelly) return res.status(404).json({ success: false, message: "User not found" });
 
-    ensureCooldownContainer(gelly);
-    normalizeInventory(gelly);
-
     const item = gelly.inventory.find(i => (i.itemId || "").toLowerCase() === (itemId || "").toLowerCase());
     if (!item) return res.status(404).json({ success: false, message: "Item not found" });
 
+    // Unequip others of same type, then set this one
     if (equipped) {
-      gelly.inventory.forEach(i => {
-        if (i.type === item.type && i.itemId !== item.itemId) i.equipped = false;
-      });
+      await Gelly.updateOne(
+        { userId },
+        { $set: { "inventory.$[sameType].equipped": false } },
+        { arrayFilters: [{ "sameType.type": item.type }] }
+      );
     }
+    await Gelly.updateOne(
+      { userId, "inventory.itemId": itemId },
+      { $set: { "inventory.$.equipped": !!equipped } }
+    );
 
-    item.equipped = !!equipped;
-
-    await gelly.save();
-    broadcastState(userId, gelly);
-
-    return res.json({ success: true, inventory: gelly.inventory });
+    const updated = await Gelly.findOne({ userId });
+    broadcastState(userId, updated);
+    res.json({ success: true, inventory: updated.inventory || [] });
   } catch (err) {
     console.error("[ERROR] POST /v1/inventory/equip:", err);
-    return res.status(500).json({ success: false, message: "Server error" });
+    res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
-// Probe for debugging
+// Debug probe
 app.get(/^\/v1\/inventory\/equip\/?$/, (_req, res) => {
   res.json({ success: true, message: "equip endpoint alive; use POST" });
 });
 
 app.get("/v1/store", (_req, res) => res.json({ success: true, store: storeItems }));
 
-// ===== Admin Reset Leaderboard =====
-app.post("/v1/admin/reset-leaderboard", async (_req, res) => {
-  try {
-    await Gelly.updateMany({}, { $set: { energy: 0, mood: 0, cleanliness: 0 } });
-    await sendLeaderboard();
-    return res.json({ success: true, message: "Leaderboard reset." });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ success: false });
-  }
-});
+// Health & Ping
+app.get("/ping", (_req, res) => res.json({ success: true, message: "Server is awake" }));
+app.get("/v1/ping", (_req, res) => res.json({ success: true, message: "Server is awake" }));
 
-// Optional: quick grant endpoint for testing
-app.post("/v1/admin/grant", async (req, res) => {
-  try {
-    const { userId: rawUser, itemId } = req.body || {};
-    if (!rawUser || !itemId) return res.status(400).json({ success: false, message: "userId and itemId required" });
-    const item = storeItems.find(s => s.id === itemId);
-    if (!item) return res.json({ success: false, message: "Invalid store item" });
-
-    let userId = rawUser;
-    if (req.headers.authorization) {
-      const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) userId = realId;
-    }
-
-    let gelly = await Gelly.findOne({ userId });
-    if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
-    normalizeInventory(gelly);
-
-    if (!gelly.inventory.some(i => i.itemId === itemId)) {
-      gelly.inventory.push({ itemId, name: item.name, type: item.type, equipped: false });
-    }
-
-    await gelly.save();
-    broadcastState(userId, gelly);
-    return res.json({ success: true, inventory: gelly.inventory });
-  } catch (e) {
-    console.error("[ERROR] /v1/admin/grant:", e);
-    return res.status(500).json({ success: false });
-  }
-});
-
-// Helpful 404
+// Helpful 404 last
 app.use((req, res) => {
   console.warn(`[404] ${req.method} ${req.originalUrl}`);
   res.status(404).json({ success: false, message: "Not Found", method: req.method, path: req.originalUrl });
 });
 
-// ===== Bits verification =====
+// Bits verification
 async function verifyBitsTransaction(transactionId, userId) {
   try {
     const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?id=${transactionId}`, {
@@ -571,11 +399,8 @@ async function verifyBitsTransaction(transactionId, userId) {
     const data = await res.json();
     const tx = data.data && data.data[0];
     return !!(tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION");
-  } catch {
-    return false;
-  }
+  } catch { return false; }
 }
 
-// ===== Start server =====
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
