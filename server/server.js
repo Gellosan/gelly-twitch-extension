@@ -1,4 +1,4 @@
-# path: server.js
+
 // ===== Gelly Server =====
 const express = require("express");
 const mongoose = require("mongoose");
