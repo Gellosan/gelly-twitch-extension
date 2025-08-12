@@ -74,6 +74,16 @@ function broadcastState(userId, gelly) {
   const ws = clients.get(userId);
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "update", state: gelly }));
 }
+function getRealTwitchId(authHeader) {
+  if (!authHeader) return null;
+  try { return jwt.decode(authHeader.split(" ")[1])?.user_id || null; } catch { return null; }
+}
+
+// Always prefer real user_id when available, otherwise use the supplied (opaque U…)
+function canonicalUserId(authHeader, supplied) {
+  const real = getRealTwitchId(authHeader);
+  return real || supplied;
+}
 
 async function sendLeaderboard() {
   const gellys = await Gelly.find();
@@ -127,10 +137,7 @@ async function fetchTwitchUserData(userId) {
     return u ? { displayName: u.display_name, loginName: u.login } : null;
   } catch { return null; }
 }
-function getRealTwitchId(authHeader) {
-  if (!authHeader) return null;
-  try { return (jwt.decode(authHeader.split(" ")[1])?.user_id) || null; } catch { return null; }
-}
+
 async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
@@ -180,30 +187,74 @@ function normalizeInventory(arr) {
   }
   return out;
 }
-async function mergeUserDocsIfSplit(primaryId) {
-  const altId = primaryId.startsWith("U") ? primaryId.slice(1) : `U${primaryId}`;
-  const [primary, alt] = await Promise.all([
-    Gelly.findOne({ userId: primaryId }),
-    Gelly.findOne({ userId: altId }),
-  ]);
-  if (!primary && !alt) return new Gelly({ userId: primaryId, points: 0, inventory: [] });
-  if (primary && !alt) { primary.inventory = normalizeInventory(primary.inventory); await primary.save(); return primary; }
-  if (!primary && alt) {
-    alt.inventory = normalizeInventory(alt.inventory);
-    alt.userId = primaryId; // migrate to canonical
-    await alt.save();
-    return alt;
+function normalizeInventory(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const i of Array.isArray(arr) ? arr : []) {
+    const id = String(i.itemId || "").trim();
+    if (!id) continue;
+    const key = id.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ itemId: id, name: i.name || "", type: i.type || "accessory", equipped: !!i.equipped });
   }
-  // both exist → merge into primary
-  const have = new Set(normalizeInventory(primary.inventory).map(i => i.itemId.toLowerCase()));
-  for (const i of normalizeInventory(alt.inventory)) {
-    if (!have.has(i.itemId.toLowerCase())) primary.inventory.push(i);
+  // enforce one equipped per type
+  const typed = new Set();
+  for (const it of out) {
+    if (!it.equipped) continue;
+    if (typed.has(it.type)) it.equipped = false;
+    else typed.add(it.type);
   }
-  primary.inventory = normalizeInventory(primary.inventory);
-  await primary.save();
-  // optionally: await Gelly.deleteOne({ _id: alt._id });
-  return primary;
+  return out;
 }
+
+// If realId exists: merge U… into real and keep real as canonical.
+// If only opaque exists (no real yet), just return the U… doc.
+async function mergeUserDocs(userId) {
+  const isReal = !String(userId).startsWith("U");
+  if (!isReal) {
+    // opaque only
+    let doc = await Gelly.findOne({ userId });
+    if (!doc) doc = await Gelly.create({ userId, points: 0, inventory: [] });
+    doc.inventory = normalizeInventory(doc.inventory);
+    await doc.save();
+    return doc;
+  }
+
+  const realId = userId;
+  const opaqueId = `U${realId}`;
+
+  let real = await Gelly.findOne({ userId: realId });
+  let opaque = await Gelly.findOne({ userId: opaqueId });
+
+  if (!real && !opaque) {
+    real = await Gelly.create({ userId: realId, points: 0, inventory: [] });
+    return real;
+  }
+  if (real && !opaque) {
+    real.inventory = normalizeInventory(real.inventory);
+    await real.save();
+    return real;
+  }
+  if (!real && opaque) {
+    // migrate opaque -> real
+    opaque.userId = realId;
+    opaque.inventory = normalizeInventory(opaque.inventory);
+    await opaque.save();
+    return opaque;
+  }
+
+  // both exist → merge opaque inv into real
+  const have = new Set(normalizeInventory(real.inventory).map(i => i.itemId.toLowerCase()));
+  for (const it of normalizeInventory(opaque.inventory)) {
+    if (!have.has(it.itemId.toLowerCase())) real.inventory.push(it);
+  }
+  real.inventory = normalizeInventory(real.inventory);
+  await real.save();
+  // optional: await Gelly.deleteOne({ _id: opaque._id });
+  return real;
+}
+
 
 // ===== Store (source of truth) =====
 const storeItems = [
@@ -222,16 +273,11 @@ const storeItems = [
 // ===== API =====
 app.get("/v1/state/:userId", async (req, res) => {
   try {
-    let { userId } = req.params;
-    const realId = getRealTwitchId(req.headers.authorization);
-    if (realId) userId = realId;
-
-    let gelly = await mergeUserDocsIfSplit(userId);
-    if (!gelly) gelly = new Gelly({ userId, points: 0 });
-
+    const userId = canonicalUserId(req.headers.authorization, req.params.userId);
+    let gelly = await mergeUserDocs(userId);
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    if (!userId || userId.startsWith("U")) {
+    if (String(userId).startsWith("U")) {
       gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
@@ -247,6 +293,7 @@ app.get("/v1/state/:userId", async (req, res) => {
   }
 });
 
+
 app.get("/v1/points/:username", async (req, res) => {
   try { res.json({ success: true, points: await getUserPoints(req.params.username) }); }
   catch { res.status(500).json({ success: false, points: 0 }); }
@@ -255,12 +302,11 @@ app.get("/v1/points/:username", async (req, res) => {
 // ---- Interact ----
 app.post("/v1/interact", async (req, res) => {
   try {
-    let { user, action } = req.body;
-    const realId = getRealTwitchId(req.headers.authorization);
-    if (realId) user = realId;
-    if (!user) return res.json({ success: false, message: "Missing user ID" });
+    const userId = canonicalUserId(req.headers.authorization, req.body.user);
+    const action = req.body.action;
+    if (!userId) return res.json({ success: false, message: "Missing user ID" });
 
-    let gelly = await mergeUserDocsIfSplit(user);
+    let gelly = await mergeUserDocs(userId);
     if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
@@ -327,15 +373,10 @@ app.post("/v1/interact", async (req, res) => {
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
   try {
-    let { userId } = req.params;
-    const realId = getRealTwitchId(req.headers.authorization);
-    if (realId) userId = realId;
-
-    let gelly = await mergeUserDocsIfSplit(userId);
-    if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
+    const userId = canonicalUserId(req.headers.authorization, req.params.userId);
+    const gelly = await mergeUserDocs(userId);
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
     await gelly.save();
-
     broadcastState(userId, gelly);
     res.json({ success: true, inventory: gelly.inventory || [] });
   } catch (err) {
@@ -344,19 +385,16 @@ app.get("/v1/inventory/:userId", async (req, res) => {
   }
 });
 
+
 // ---- Buy (atomic add; avoids overwriting) ----
 app.post("/v1/inventory/buy", async (req, res) => {
   try {
-    const userId = resolveTwitchId(req.headers.authorization, req.body.userId);
+    const userId = canonicalUserId(req.headers.authorization, req.body.userId);
     const { itemId, transactionId } = req.body;
 
-    // canonical/merged doc
-    let gelly = await mergeUserDocsIfSplit(userId);
-    if (!gelly) gelly = await Gelly.create({ userId, points: 0, inventory: [] });
-
-    // ensure twitch identities if possible
-    if (!gelly.loginName || gelly.loginName === "unknown") {
-      if (!userId.startsWith("U")) {
+    let gelly = await mergeUserDocs(userId);
+    if (!gelly.loginName) {
+      if (!String(userId).startsWith("U")) {
         const td = await fetchTwitchUserData(userId);
         if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
       }
@@ -364,16 +402,14 @@ app.post("/v1/inventory/buy", async (req, res) => {
       await gelly.save();
     }
 
-    // validate item
     const storeItem = storeItems.find(s => s.id === itemId);
     if (!storeItem) return res.json({ success: false, message: "Invalid store item" });
 
     const { name, type, cost, currency } = storeItem;
 
-    // payment checks
     if (currency === "jellybeans") {
       const isGuest = !gelly.loginName || gelly.loginName === "guest" || gelly.loginName === "unknown";
-      if (!(isGuest && ALLOW_GUEST_PURCHASES)) {
+      if (!(isGuest && process.env.ALLOW_GUEST_PURCHASES === "true")) {
         const usernameForPoints = gelly.loginName || "guest";
         const userPoints = await getUserPoints(usernameForPoints);
         if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans" });
@@ -381,29 +417,29 @@ app.post("/v1/inventory/buy", async (req, res) => {
         if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
       }
     } else if (currency === "bits") {
-      const valid = await verifyBitsTransaction(transactionId, userId.startsWith("U") ? userId.slice(1) : userId);
+      const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
+      const valid = await verifyBitsTransaction(transactionId, verifyId);
       if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
     } else {
       return res.json({ success: false, message: "Invalid currency type" });
     }
 
-    // atomic add (no duplicates)
     await Gelly.updateOne(
       { userId },
       { $addToSet: { inventory: { itemId, name, type, equipped: false } } }
     );
 
-    const updated = await mergeUserDocsIfSplit(userId);
-    console.log("[BUY] Added:", { userId: userId.replace(/^U/, ""), itemId });
+    const updated = await mergeUserDocs(userId);
+    console.log("[BUY] Added:", { userId: String(userId).replace(/^U/, ""), itemId });
     broadcastState(userId, updated);
     sendLeaderboard();
-
-    return res.json({ success: true, inventory: updated.inventory || [] });
+    res.json({ success: true, inventory: updated.inventory || [] });
   } catch (err) {
     console.error("[ERROR] POST /v1/inventory/buy:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 // ---- Equip (merge first, then enforce one-per-type) ----
 app.post("/v1/inventory/equip", async (req, res) => {
