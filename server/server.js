@@ -1,3 +1,4 @@
+// path: server.js
 // ===== Gelly Server =====
 const express = require("express");
 const mongoose = require("mongoose");
@@ -11,10 +12,10 @@ const tmi = require("tmi.js");
 const app = express();
 app.use(express.json());
 
-// Request log (why: visibility/debug in Render)
+// Simple req log (why: debug on Render)
 app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
 
-// ===== CORS tuned for Twitch (no URL() to avoid Invalid URL) =====
+// ===== Twitch-safe CORS (no URL() to avoid Invalid URL in Render) =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
@@ -40,12 +41,13 @@ app.use((req, res, next) => {
   next();
 });
 
-// ===== Twitch Bot (for StreamElements points sync via chat) =====
+// ===== Twitch Bot (StreamElements points via chat) =====
 const twitchClient = new tmi.Client({
   identity: { username: process.env.TWITCH_BOT_USERNAME, password: process.env.TWITCH_OAUTH_TOKEN },
   channels: [process.env.TWITCH_CHANNEL_NAME],
 });
-twitchClient.connect()
+twitchClient
+  .connect()
   .then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME))
   .catch(console.error);
 
@@ -88,7 +90,6 @@ const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fet
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
 const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
 
-// Consistent id: prefer JWT (shared identity user_id, else opaque U...), fallback to param/body
 function resolveTwitchId(authHeader, fallback) {
   try {
     const token = authHeader?.split(" ")[1];
@@ -101,26 +102,25 @@ function resolveTwitchId(authHeader, fallback) {
   }
 }
 
-// Merge alt-id doc (opaque ↔ numeric) into resolved doc. Why: prevent split inventories.
+// Merge inventories between opaque “U…” and numeric ids (why: split docs cause empty/1-item inventories)
 async function mergeUserDocsIfSplit(primaryId) {
   const altId = primaryId.startsWith("U") ? primaryId.slice(1) : `U${primaryId}`;
   const [primary, alt] = await Promise.all([
     Gelly.findOne({ userId: primaryId }),
     Gelly.findOne({ userId: altId }),
   ]);
+
   if (!alt) return primary || null;
 
   let p = primary;
   if (!p) p = new Gelly({ userId: primaryId, points: 0, inventory: [] });
 
-  // Merge unique items by itemId (case-insensitive)
   const have = new Set((p.inventory || []).map(i => (i.itemId || "").toLowerCase()));
   (alt.inventory || []).forEach(i => {
     const key = (i.itemId || "").toLowerCase();
     if (!have.has(key)) p.inventory.push({ itemId: i.itemId, name: i.name, type: i.type, equipped: false });
   });
 
-  // Prefer better identity fields
   if (!p.displayName && alt.displayName) p.displayName = alt.displayName;
   if (!p.loginName && alt.loginName) p.loginName = alt.loginName;
 
@@ -141,7 +141,6 @@ async function fetchTwitchUserData(userId) {
   } catch { return null; }
 }
 
-// Normalize Map( Date ) field even if old docs stored object
 function toDateMap(maybeMap) {
   if (maybeMap instanceof Map) return maybeMap;
   const m = new Map();
@@ -189,6 +188,7 @@ async function deductUserPoints(username, amount) {
   } catch (err) { console.error("[deductUserPoints] error:", err); return null; }
 }
 
+// ===== Leaderboard =====
 async function sendLeaderboard() {
   const gellys = await Gelly.find();
   for (const g of gellys) {
@@ -200,9 +200,13 @@ async function sendLeaderboard() {
   }
   const leaderboard = gellys
     .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
-    .map(g => ({ displayName: g.displayName || g.loginName || "Unknown", loginName: g.loginName || "unknown",
-      score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0)) }))
-    .sort((a,b)=>b.score-a.score).slice(0,10);
+    .map(g => ({
+      displayName: g.displayName || g.loginName || "Unknown",
+      loginName: g.loginName || "unknown",
+      score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0)),
+    }))
+    .sort((a,b)=>b.score-a.score)
+    .slice(0,10);
 
   const data = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, ws] of clients) if (ws.readyState === WebSocket.OPEN) ws.send(data);
@@ -243,7 +247,10 @@ app.get("/v1/state/:userId", async (req, res) => {
     await gelly.save();
     broadcastState(userId, gelly);
     res.json({ success: true, state: gelly });
-  } catch (e) { console.error(e); res.status(500).json({ success: false, message: "Server error" }); }
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
 });
 
 app.get("/v1/points/:username", async (req, res) => {
@@ -273,7 +280,6 @@ app.post("/v1/interact", async (req, res) => {
     const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
 
-    // Cooldowns
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
     const cooldownKey = action.startsWith("color:") ? "color" : action;
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
@@ -302,13 +308,19 @@ app.post("/v1/interact", async (req, res) => {
       const newBal = await deductUserPoints(usernameForPoints, cost);
       if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = newBal;
-      gelly.color = action.split(":")[1] || "blue"; ok = true;
-    } else if (action === "play") ok = gelly.updateStats("play").success;
-    } else if (action === "clean") ok = gelly.updateStats("clean").success;
-    else if (action === "startgame") {
+      gelly.color = action.split(":")[1] || "blue";
+      ok = true;
+    } else if (action === "play") {
+      ok = gelly.updateStats("play").success;
+    } else if (action === "clean") {
+      ok = gelly.updateStats("clean").success;
+    } else if (action === "startgame") {
       gelly.points = 0; gelly.energy = 100; gelly.mood = 100; gelly.cleanliness = 100;
-      gelly.stage = "egg"; gelly.lastUpdated = new Date(); ok = true;
-    } else return res.json({ success: false, message: "Unknown action" });
+      gelly.stage = "egg"; gelly.lastUpdated = new Date();
+      ok = true;
+    } else {
+      return res.json({ success: false, message: "Unknown action" });
+    }
 
     if (!ok) return res.json({ success: false, message: "Action failed" });
 
@@ -358,7 +370,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
     const storeItem = storeItems.find(s => s.id === itemId);
     if (!storeItem) return res.json({ success: false, message: "Invalid store item" });
 
-    // charge user
+    // Charge
     if (storeItem.currency === "jellybeans") {
       const usernameForPoints = gelly.loginName || "guest";
       const userPoints = await getUserPoints(usernameForPoints);
@@ -370,7 +382,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
       if (!ok) return res.json({ success: false, message: "Bits payment not verified" });
     } else return res.json({ success: false, message: "Invalid currency type" });
 
-    // add once
+    // Add once
     const exists = gelly.inventory.some(i => (i.itemId || "").toLowerCase() === itemId.toLowerCase());
     if (!exists) {
       const newItem = { itemId: storeItem.id, name: storeItem.name, type: storeItem.type, equipped: false };
@@ -378,7 +390,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
         newItem.equipped = true;
       }
       gelly.inventory.push(newItem);
-      console.log("[BUY] Added:", { userId, itemId: storeItem.id });
+      console.log("[BUY] Added:", { userId: userId.replace(/^U/, ""), itemId: storeItem.id });
     }
 
     await gelly.save();
