@@ -316,7 +316,7 @@ app.post("/v1/interact", async (req, res) => {
     // set display/login names
     if (String(userId).startsWith("U")) {
       gelly.displayName = "Guest Viewer";
-      gelly.loginName = "guest";
+      gelly.loginName   = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
@@ -343,7 +343,7 @@ app.post("/v1/interact", async (req, res) => {
       const cost = 10000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
       const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      if (nb === null)   return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = nb;
       ok = gelly.updateStats("feed").success;
     } else if (action === "play") {
@@ -354,7 +354,7 @@ app.post("/v1/interact", async (req, res) => {
       const cost = 50000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      if (nb === null)   return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = nb;
       gelly.color = action.split(":")[1] || "blue";
       ok = true;
@@ -373,7 +373,7 @@ app.post("/v1/interact", async (req, res) => {
     if (!ok) return res.json({ success: false, message: "Action failed" });
     await gelly.save();
 
-    broadcastState(userId, gelly);
+    broadcastState(userId, gelly);   // <-- userId (not user)
     sendLeaderboard();
     res.json({ success: true, newBalance: userPoints, state: gelly });
   } catch (err) {
