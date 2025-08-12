@@ -1,4 +1,3 @@
-// path: server.js
 // ===== Gelly Server =====
 const express = require("express");
 const mongoose = require("mongoose");
@@ -12,10 +11,13 @@ const tmi = require("tmi.js");
 const app = express();
 app.use(express.json());
 
-// Simple req log (why: debug on Render)
-app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
+// Simple request logger (handy on Render)
+app.use((req, _res, next) => {
+  console.log(`[REQ] ${req.method} ${req.path}`);
+  next();
+});
 
-// ===== Twitch-safe CORS (no URL() to avoid Invalid URL in Render) =====
+// ===== Twitch-safe CORS (no URL() to avoid Invalid URL) =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
@@ -102,32 +104,6 @@ function resolveTwitchId(authHeader, fallback) {
   }
 }
 
-// Merge inventories between opaque “U…” and numeric ids (why: split docs cause empty/1-item inventories)
-async function mergeUserDocsIfSplit(primaryId) {
-  const altId = primaryId.startsWith("U") ? primaryId.slice(1) : `U${primaryId}`;
-  const [primary, alt] = await Promise.all([
-    Gelly.findOne({ userId: primaryId }),
-    Gelly.findOne({ userId: altId }),
-  ]);
-
-  if (!alt) return primary || null;
-
-  let p = primary;
-  if (!p) p = new Gelly({ userId: primaryId, points: 0, inventory: [] });
-
-  const have = new Set((p.inventory || []).map(i => (i.itemId || "").toLowerCase()));
-  (alt.inventory || []).forEach(i => {
-    const key = (i.itemId || "").toLowerCase();
-    if (!have.has(key)) p.inventory.push({ itemId: i.itemId, name: i.name, type: i.type, equipped: false });
-  });
-
-  if (!p.displayName && alt.displayName) p.displayName = alt.displayName;
-  if (!p.loginName && alt.loginName) p.loginName = alt.loginName;
-
-  await p.save();
-  return p;
-}
-
 async function fetchTwitchUserData(userId) {
   try {
     const cleanId = userId?.startsWith("U") ? userId.substring(1) : userId;
@@ -139,6 +115,57 @@ async function fetchTwitchUserData(userId) {
     const user = data?.data?.[0];
     return user ? { displayName: user.display_name, loginName: user.login } : null;
   } catch { return null; }
+}
+
+// Normalize/dedupe an inventory array in-place by case-insensitive itemId
+function normalizeInventory(arr) {
+  const seen = new Set();
+  const out = [];
+  for (const i of Array.isArray(arr) ? arr : []) {
+    const id = (i.itemId || "").toString().trim();
+    const key = id.toLowerCase();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({
+      itemId: id,                       // keep original casing for client assets
+      name: i.name || "",
+      type: i.type || "accessory",
+      equipped: !!i.equipped,
+    });
+  }
+  return out;
+}
+
+// Merge inventories between opaque “U…” and numeric ids
+async function mergeUserDocsIfSplit(primaryId) {
+  const altId = primaryId.startsWith("U") ? primaryId.slice(1) : `U${primaryId}`;
+  const [primary, alt] = await Promise.all([
+    Gelly.findOne({ userId: primaryId }),
+    Gelly.findOne({ userId: altId }),
+  ]);
+
+  if (!alt) {
+    if (!primary) return null;
+    primary.inventory = normalizeInventory(primary.inventory);
+    await primary.save();
+    return primary;
+  }
+
+  let p = primary || new Gelly({ userId: primaryId, points: 0, inventory: [] });
+
+  // merge inventories (no overwrite)
+  const have = new Set(normalizeInventory(p.inventory).map(i => i.itemId.toLowerCase()));
+  for (const i of normalizeInventory(alt.inventory)) {
+    if (!have.has(i.itemId.toLowerCase())) p.inventory.push(i);
+  }
+
+  if (!p.displayName && alt.displayName) p.displayName = alt.displayName;
+  if (!p.loginName && alt.loginName) p.loginName = alt.loginName;
+
+  p.inventory = normalizeInventory(p.inventory);
+  await p.save();
+  return p;
 }
 
 function toDateMap(maybeMap) {
@@ -244,7 +271,9 @@ app.get("/v1/state/:userId", async (req, res) => {
       if (twitchData) { gelly.displayName = twitchData.displayName; gelly.loginName = twitchData.loginName; }
     }
 
+    gelly.inventory = normalizeInventory(gelly.inventory);
     await gelly.save();
+
     broadcastState(userId, gelly);
     res.json({ success: true, state: gelly });
   } catch (e) {
@@ -324,6 +353,7 @@ app.post("/v1/interact", async (req, res) => {
 
     if (!ok) return res.json({ success: false, message: "Action failed" });
 
+    gelly.inventory = normalizeInventory(gelly.inventory);
     await gelly.save();
     broadcastState(user, gelly);
     sendLeaderboard();
@@ -340,7 +370,7 @@ app.get("/v1/inventory/:userId", async (req, res) => {
     const userId = resolveTwitchId(req.headers.authorization, req.params.userId);
     let gelly = await mergeUserDocsIfSplit(userId);
     if (!gelly) gelly = new Gelly({ userId, points: 0, inventory: [] });
-    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
+    gelly.inventory = normalizeInventory(gelly.inventory);
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
     await gelly.save();
     broadcastState(userId, gelly);
@@ -365,9 +395,10 @@ app.post("/v1/inventory/buy", async (req, res) => {
       const twitchData = await fetchTwitchUserData(userId);
       if (twitchData) { gelly.displayName = twitchData.displayName; gelly.loginName = twitchData.loginName; }
     }
-    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
 
-    const storeItem = storeItems.find(s => s.id === itemId);
+    gelly.inventory = normalizeInventory(gelly.inventory);
+
+    const storeItem = storeItems.find(s => (s.id || "").toLowerCase() === (itemId || "").toLowerCase());
     if (!storeItem) return res.json({ success: false, message: "Invalid store item" });
 
     // Charge
@@ -383,7 +414,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
     } else return res.json({ success: false, message: "Invalid currency type" });
 
     // Add once
-    const exists = gelly.inventory.some(i => (i.itemId || "").toLowerCase() === itemId.toLowerCase());
+    const exists = gelly.inventory.some(i => (i.itemId || "").toLowerCase() === storeItem.id.toLowerCase());
     if (!exists) {
       const newItem = { itemId: storeItem.id, name: storeItem.name, type: storeItem.type, equipped: false };
       if (AUTO_EQUIP_IF_EMPTY && !gelly.inventory.some(i => i.type === storeItem.type && i.equipped)) {
@@ -393,6 +424,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
       console.log("[BUY] Added:", { userId: userId.replace(/^U/, ""), itemId: storeItem.id });
     }
 
+    gelly.inventory = normalizeInventory(gelly.inventory);
     await gelly.save();
     res.json({ success: true, inventory: gelly.inventory });
   } catch (err) {
@@ -409,13 +441,13 @@ app.post("/v1/inventory/equip", async (req, res) => {
     let gelly = await mergeUserDocsIfSplit(userId);
     if (!gelly) return res.status(404).json({ success: false, message: "User not found" });
 
-    if (!Array.isArray(gelly.inventory)) gelly.inventory = [];
+    gelly.inventory = normalizeInventory(gelly.inventory);
 
     const norm = (s) => (s ?? "").toString().trim().toLowerCase();
     const want = norm(itemId);
-    const byId = gelly.inventory.find(i => norm(i.itemId) === want);
-    const byName = gelly.inventory.find(i => norm(i.name) === want);
-    const item = byId || byName;
+    // try by id, then by name
+    let item = gelly.inventory.find(i => norm(i.itemId) === want);
+    if (!item) item = gelly.inventory.find(i => norm(i.name) === want);
 
     if (!item) {
       console.warn("[EQUIP] Item not found", { userId, want, inv: gelly.inventory.map(i => i.itemId) });
@@ -429,6 +461,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
     }
     item.equipped = !!equipped;
 
+    gelly.inventory = normalizeInventory(gelly.inventory);
     await gelly.save();
     res.json({ success: true, inventory: gelly.inventory });
   } catch (err) {
