@@ -167,26 +167,33 @@ async function deductUserPoints(username, amount) {
   } catch { return null; }
 }
 
-// inventory normalization & doc merge
+// inventory normalization (single definition)
 function normalizeInventory(arr) {
   const seen = new Set();
   const out = [];
   for (const i of Array.isArray(arr) ? arr : []) {
-    const id = (i.itemId || "").toString().trim();
+    const id = String(i.itemId || "").trim();
+    if (!id) continue;
     const key = id.toLowerCase();
-    if (!key || seen.has(key)) continue;
+    if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ itemId: id, name: i.name || "", type: i.type || "accessory", equipped: !!i.equipped });
+    out.push({
+      itemId: id,
+      name: i.name || "",
+      type: i.type || "accessory",
+      equipped: !!i.equipped
+    });
   }
   // enforce one equipped per type
-  const typeSeen = new Set();
+  const typed = new Set();
   for (const it of out) {
     if (!it.equipped) continue;
-    if (typeSeen.has(it.type)) it.equipped = false;
-    else typeSeen.add(it.type);
+    if (typed.has(it.type)) it.equipped = false;
+    else typed.add(it.type);
   }
   return out;
 }
+
 function normalizeInventory(arr) {
   const seen = new Set();
   const out = [];
@@ -208,12 +215,10 @@ function normalizeInventory(arr) {
   return out;
 }
 
-// If realId exists: merge U… into real and keep real as canonical.
-// If only opaque exists (no real yet), just return the U… doc.
+// Merge U…/real docs, return canonical doc
 async function mergeUserDocs(userId) {
   const isReal = !String(userId).startsWith("U");
   if (!isReal) {
-    // opaque only
     let doc = await Gelly.findOne({ userId });
     if (!doc) doc = await Gelly.create({ userId, points: 0, inventory: [] });
     doc.inventory = normalizeInventory(doc.inventory);
@@ -237,14 +242,13 @@ async function mergeUserDocs(userId) {
     return real;
   }
   if (!real && opaque) {
-    // migrate opaque -> real
     opaque.userId = realId;
     opaque.inventory = normalizeInventory(opaque.inventory);
     await opaque.save();
     return opaque;
   }
 
-  // both exist → merge opaque inv into real
+  // both exist → merge
   const have = new Set(normalizeInventory(real.inventory).map(i => i.itemId.toLowerCase()));
   for (const it of normalizeInventory(opaque.inventory)) {
     if (!have.has(it.itemId.toLowerCase())) real.inventory.push(it);
@@ -307,23 +311,25 @@ app.post("/v1/interact", async (req, res) => {
     if (!userId) return res.json({ success: false, message: "Missing user ID" });
 
     let gelly = await mergeUserDocs(userId);
-    if (!gelly) gelly = new Gelly({ userId: user, points: 0 });
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    if (!user || user.startsWith("U")) {
-      gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
+    // set display/login names
+    if (String(userId).startsWith("U")) {
+      gelly.displayName = "Guest Viewer";
+      gelly.loginName = "guest";
     } else {
-      const td = await fetchTwitchUserData(user);
+      const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
     await gelly.save();
 
-    const usernameForPoints = gelly.loginName;
+    const usernameForPoints = gelly.loginName || "guest";
     let userPoints = await getUserPoints(usernameForPoints);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
-    const key = action.startsWith("color:") ? "color" : action;
+    const key = action?.startsWith?.("color:") ? "color" : action;
     const cooldown = ACTION_COOLDOWNS[key] || 60000;
+
     const now = new Date();
     const last = gelly.lastActionTimes?.get?.(key) || null;
     if (last && now - last < cooldown) {
@@ -340,7 +346,11 @@ app.post("/v1/interact", async (req, res) => {
       if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = nb;
       ok = gelly.updateStats("feed").success;
-    } else if (action.startsWith("color:")) {
+    } else if (action === "play") {
+      ok = gelly.updateStats("play").success;
+    } else if (action === "clean") {
+      ok = gelly.updateStats("clean").success;
+    } else if (action?.startsWith?.("color:")) {
       const cost = 50000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       const nb = await deductUserPoints(usernameForPoints, cost);
@@ -348,12 +358,13 @@ app.post("/v1/interact", async (req, res) => {
       userPoints = nb;
       gelly.color = action.split(":")[1] || "blue";
       ok = true;
-    } else if (action === "play") {
-      ok = gelly.updateStats("play").success;
-    } else if (action === "clean") {
-      ok = gelly.updateStats("clean").success;
     } else if (action === "startgame") {
-      gelly.points = 0; gelly.energy = 100; gelly.mood = 100; gelly.cleanliness = 100; gelly.stage = "egg"; gelly.lastUpdated = new Date();
+      gelly.points = 0;
+      gelly.energy = 100;
+      gelly.mood = 100;
+      gelly.cleanliness = 100;
+      gelly.stage = "egg";
+      gelly.lastUpdated = new Date();
       ok = true;
     } else {
       return res.json({ success: false, message: "Unknown action" });
@@ -361,7 +372,8 @@ app.post("/v1/interact", async (req, res) => {
 
     if (!ok) return res.json({ success: false, message: "Action failed" });
     await gelly.save();
-    broadcastState(user, gelly);
+
+    broadcastState(userId, gelly);
     sendLeaderboard();
     res.json({ success: true, newBalance: userPoints, state: gelly });
   } catch (err) {
@@ -369,6 +381,7 @@ app.post("/v1/interact", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
+
 
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
@@ -444,10 +457,10 @@ app.post("/v1/inventory/buy", async (req, res) => {
 // ---- Equip (merge first, then enforce one-per-type) ----
 app.post("/v1/inventory/equip", async (req, res) => {
   try {
-    const userId = resolveTwitchId(req.headers.authorization, req.body.userId);
+    const userId = canonicalUserId(req.headers.authorization, req.body.userId);
     const { itemId, equipped } = req.body;
 
-    let gelly = await mergeUserDocsIfSplit(userId);
+    let gelly = await mergeUserDocs(userId);
     if (!gelly) return res.json({ success: false, message: "User not found" });
 
     const norm = (s) => (s ?? "").toString().trim().toLowerCase();
@@ -457,16 +470,16 @@ app.post("/v1/inventory/equip", async (req, res) => {
     let item = (gelly.inventory || []).find(i => norm(i.itemId) === want) ||
                (gelly.inventory || []).find(i => norm(i.name) === want);
 
-    // if missing, try another merge (covers race)
+    // if missing, try one more merge (covers race)
     if (!item) {
-      gelly = await mergeUserDocsIfSplit(userId);
+      gelly = await mergeUserDocs(userId);
       item = (gelly.inventory || []).find(i => norm(i.itemId) === want) ||
              (gelly.inventory || []).find(i => norm(i.name) === want);
     }
 
     if (!item) {
-      console.warn("[EQUIP] Item not found", { userId: userId.replace(/^U/, ""), want, inv: (gelly.inventory || []).map(i => i.itemId) });
-      return res.json({ success: false, message: "Item not found" }); // 200 so the panel can show message
+      console.warn("[EQUIP] Item not found", { userId: String(userId).replace(/^U/, ""), want, inv: (gelly.inventory || []).map(i => i.itemId) });
+      return res.json({ success: false, message: "Item not found" });
     }
 
     // only one equipped per type
@@ -480,7 +493,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
     gelly.inventory = normalizeInventory(gelly.inventory);
     await gelly.save();
 
-    console.log("[EQUIP] Updated", { userId: userId.replace(/^U/, ""), itemId: item.itemId, equipped: !!equipped });
+    broadcastState(userId, gelly);
     return res.json({ success: true, inventory: gelly.inventory });
   } catch (err) {
     console.error("[ERROR] POST /v1/inventory/equip:", err);
