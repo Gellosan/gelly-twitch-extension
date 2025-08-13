@@ -110,10 +110,8 @@ async function getGellyByLogin(login) {
   return g;
 }
 
-// Apply +/- 5% care via momentum so future updates remain consistent with your model.
-// Winner: add +5% of current careScore to momentum
-// Loser : subtract 5% of current careScore from momentum (floor at 0)
-async function applyDuelCareDelta(gelly, pct /* +0.05 or -0.05 */) {
+// Apply +/- care via momentum so future updates remain consistent with your model.
+async function applyDuelCareDelta(gelly, pct /* e.g. +0.01 or -0.01 */) {
   // first decay into "now", so we modify a fresh momentum
   const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, new Date()).momentum;
   const currentScore = Math.max(0, Number(gelly.careScore) || 0);
@@ -244,11 +242,11 @@ if (ENABLE_DUELS) {
         await adjustUserPoints(winner, +bet);
         await adjustUserPoints(loser,  -bet);
 
-        // Settle care (±5%)
+        // Settle care (±DUEL_CARE_PCT)
         const gW = winner === challenger ? g1 : g2;
         const gL = winner === challenger ? g2 : g1;
-        await applyDuelCareDelta(gW, +0.05);
-        await applyDuelCareDelta(gL, -0.05);
+        await applyDuelCareDelta(gW, +DUEL_CARE_PCT);
+        await applyDuelCareDelta(gL, -DUEL_CARE_PCT);
 
         // Broadcast (if their userIds are known/connected)
         if (g1.userId) broadcastState(g1.userId, g1);
@@ -259,7 +257,7 @@ if (ENABLE_DUELS) {
         twitchClient.say(
           channel,
           `⚔️ Gelly Duel: @${challenger} (care ${pretty(cs1)}) vs @${target} (care ${pretty(cs2)}). ` +
-          `Winner: @${winner}! +${bet}🫘 & +5% care. @${loser} loses ${bet}🫘 & 5% care.`
+          `Winner: @${winner}! +${bet}🫘 & +${Math.round(DUEL_CARE_PCT*100)}% care. @${loser} loses ${bet}🫘 & ${Math.round(DUEL_CARE_PCT*100)}% care.`
         );
 
         activeByUser.delete(challenger); activeByUser.delete(target);
@@ -396,8 +394,17 @@ async function deductUserPoints(username, amount) {
 }
 
 // ===== Care Score config =====
-const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 48); // tweakable
-const CARE_WEIGHTS = { feed: 60, play: 45, clean: 30 }; // points per action
+const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 24); // faster decay to prevent runaway
+const CARE_WEIGHTS = (() => {
+  try { return JSON.parse(process.env.CARE_WEIGHTS_JSON); }
+  catch { return { feed: 6, play: 4, clean: 3 }; }  // smaller per-action gains
+})();
+const DUEL_CARE_PCT = Number(process.env.DUEL_CARE_PCT || 0.01); // 1% default
+const MOMENTUM_CAPS = {
+  egg:   Number(process.env.CAP_MOMENTUM_EGG   || 300),
+  blob:  Number(process.env.CAP_MOMENTUM_BLOB  || 1000),
+  gelly: Number(process.env.CAP_MOMENTUM_GELLY || 2000),
+};
 
 function decayMomentum(prevMomentum = 0, lastAt, now = new Date()) {
   if (!prevMomentum || !lastAt) return { momentum: prevMomentum || 0, at: now };
@@ -420,9 +427,14 @@ async function updateCareScore(gelly, eventType /* 'feed'|'play'|'clean'|null */
   // base still tops out at 1500 on perfect stats
   const base = ((gelly.energy || 0) + (gelly.mood || 0) + (gelly.cleanliness || 0)) * 5;
 
-  gelly.careMomentum = momentum;
+  // clamp momentum by stage to slow explosive growth
+  const stage = (gelly.stage || "egg").toLowerCase();
+  const cap = MOMENTUM_CAPS[stage] ?? 1000;
+  const clampedMomentum = Math.min(momentum, cap);
+
+  gelly.careMomentum = clampedMomentum;
   gelly.careMomentumUpdatedAt = now;
-  gelly.careScore = Math.round(base + momentum);
+  gelly.careScore = Math.round(base + clampedMomentum);
   return gelly.careScore;
 }
 
