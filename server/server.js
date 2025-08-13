@@ -390,13 +390,15 @@ app.post("/v1/inventory/buy", async (req, res) => {
         const newBal = await deductUserPoints(usernameForPoints, cost);
         if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
       }
-    } else if (currency === "bits") {
-      const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
-      const valid = await verifyBitsTransaction(transactionId, verifyId);
-      if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
-    } else {
-      return res.json({ success: false, message: "Invalid currency type" });
-    }
+  } else if (currency === "bits") {
+  if (!transactionId) {
+    return res.json({ success: false, message: "Missing Bits transaction id" });
+  }
+  const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
+  const valid = await verifyBitsTransaction(transactionId, verifyId);
+  if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
+}
+
 
     await Gelly.updateOne(
       { userId },
@@ -473,45 +475,24 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: "Not Found", method: req.method, path: req.originalUrl });
 });
 
-// Bits verification
-// ---- Bits verification (Helix: Get Extension Transactions)
+
+// Bits verification (Helix: Get Extension Transactions)
 async function verifyBitsTransaction(transactionId, userId) {
   try {
-    const url = `https://api.twitch.tv/helix/extensions/transactions?extension_id=${EXT_CLIENT_ID}&id=${transactionId}`;
-    const res = await fetch(url, {
-      headers: {
-        'Client-ID': EXT_CLIENT_ID,
-        'Authorization': `Bearer ${EXT_APP_TOKEN}`,
-      }
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      console.error('[BITS] verify HTTP', res.status, JSON.stringify(data));
+    if (!transactionId) {
+      console.warn("[BITS] verify: missing transactionId");
       return false;
     }
-    const tx = data.data && data.data[0];
-    return !!(tx &&
-      tx.transaction_id === transactionId &&
-      tx.user_id === userId &&
-      tx.product_type === 'BITS_IN_EXTENSION');
-  } catch (e) {
-    console.error('[BITS] verify error', e);
-    return false;
-  }
-}
 
-    // Required: extension_id + id
     const params = new URLSearchParams({
-      extension_id: EXT_CLIENT_ID,
-      id: transactionId
+      extension_id: EXT_CLIENT_ID,   // your Extension's client id
+      id: transactionId              // the id from onTransactionComplete
     });
 
-    const url = `https://api.twitch.tv/helix/extensions/transactions?${params.toString()}`;
-    const res = await fetch(url, {
+    const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?${params.toString()}`, {
       headers: {
-        "Client-ID": EXT_CLIENT_ID,                   // must be the Extension's client id
-        "Authorization": `Bearer ${EXT_APP_TOKEN}`,   // app access token for the Extension
-        "Content-Type": "application/json"
+        "Client-ID": EXT_CLIENT_ID,
+        "Authorization": `Bearer ${EXT_APP_TOKEN}`
       }
     });
 
@@ -529,20 +510,24 @@ async function verifyBitsTransaction(transactionId, userId) {
       return false;
     }
 
-    // Accept either new or old shape: product.type OR product_type
+    // Accept either shape: tx.product.type or tx.product_type
     const productType = tx.product?.type || tx.product_type;
     const okUser = String(tx.user_id) === String(userId);
     const okType = productType === "BITS_IN_EXTENSION";
 
     if (!okUser || !okType) {
-      console.warn("[BITS] verify: validation failed", { okUser, okType, txUser: tx.user_id, wantUser: String(userId), productType });
+      console.warn("[BITS] verify: validation failed", {
+        okUser, okType, txUser: tx.user_id, wantUser: String(userId), productType
+      });
     }
+
     return okUser && okType;
   } catch (e) {
     console.error("[BITS] verify error:", e);
     return false;
   }
 }
+
 
 
 
