@@ -11,7 +11,7 @@ const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fet
 const app = express();
 app.use(express.json());
 
-// ===== CORS (defensive, parser-free) =====
+// ===== CORS =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
   const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
@@ -45,7 +45,9 @@ const twitchClient = new tmi.Client({
   identity: { username: process.env.TWITCH_BOT_USERNAME, password: process.env.TWITCH_OAUTH_TOKEN },
   channels: [process.env.TWITCH_CHANNEL_NAME],
 });
-twitchClient.connect().then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME)).catch(console.error);
+twitchClient.connect()
+  .then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME))
+  .catch(console.error);
 
 // ===== MongoDB =====
 mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
@@ -71,15 +73,15 @@ wss.on("connection", (ws, req) => {
 });
 
 function broadcastState(userId, gelly) {
-  const ws = clients.get(userId);
-  if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "update", state: gelly }));
+  const ws = clients.get(userId) || clients.get(`U${userId}`) || clients.get(String(userId).replace(/^U/, ""));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "update", state: gelly }));
+  }
 }
 function getRealTwitchId(authHeader) {
   if (!authHeader) return null;
   try { return jwt.decode(authHeader.split(" ")[1])?.user_id || null; } catch { return null; }
 }
-
-// Always prefer real user_id when available, otherwise use the supplied (opaque U…)
 function canonicalUserId(authHeader, supplied) {
   const real = getRealTwitchId(authHeader);
   return real || supplied;
@@ -112,22 +114,9 @@ const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
 const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 const ALLOW_GUEST_PURCHASES = process.env.ALLOW_GUEST_PURCHASES === "true";
 
-function resolveTwitchId(authHeader, fallback) {
-  try {
-    const token = authHeader?.split(" ")[1];
-    if (!token) return fallback;
-    const decoded = jwt.decode(token);
-    // Prefer opaque id so ALL panel calls hit the same doc (U…).
-    const id = decoded?.opaque_user_id || decoded?.user_id || fallback;
-    return (typeof id === "string" && id.trim()) ? id.trim() : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 async function fetchTwitchUserData(userId) {
   try {
-    const cleanId = userId?.startsWith("U") ? userId.substring(1) : userId;
+    const cleanId = String(userId || "").startsWith("U") ? String(userId).substring(1) : String(userId);
     const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
       headers: { "Client-ID": TWITCH_CLIENT_ID, "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}` },
     });
@@ -167,33 +156,7 @@ async function deductUserPoints(username, amount) {
   } catch { return null; }
 }
 
-// inventory normalization (single definition)
-function normalizeInventory(arr) {
-  const seen = new Set();
-  const out = [];
-  for (const i of Array.isArray(arr) ? arr : []) {
-    const id = String(i.itemId || "").trim();
-    if (!id) continue;
-    const key = id.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push({
-      itemId: id,
-      name: i.name || "",
-      type: i.type || "accessory",
-      equipped: !!i.equipped
-    });
-  }
-  // enforce one equipped per type
-  const typed = new Set();
-  for (const it of out) {
-    if (!it.equipped) continue;
-    if (typed.has(it.type)) it.equipped = false;
-    else typed.add(it.type);
-  }
-  return out;
-}
-
+// single definition
 function normalizeInventory(arr) {
   const seen = new Set();
   const out = [];
@@ -205,7 +168,7 @@ function normalizeInventory(arr) {
     seen.add(key);
     out.push({ itemId: id, name: i.name || "", type: i.type || "accessory", equipped: !!i.equipped });
   }
-  // enforce one equipped per type
+  // one equipped per type
   const typed = new Set();
   for (const it of out) {
     if (!it.equipped) continue;
@@ -215,7 +178,7 @@ function normalizeInventory(arr) {
   return out;
 }
 
-// Merge U…/real docs, return canonical doc
+// merge docs
 async function mergeUserDocs(userId) {
   const isReal = !String(userId).startsWith("U");
   if (!isReal) {
@@ -259,8 +222,7 @@ async function mergeUserDocs(userId) {
   return real;
 }
 
-
-// ===== Store (source of truth) =====
+// ===== Store =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
   { id: "party-hat",    name: "Party Hat",    type: "hat",       cost: 300000, currency: "jellybeans" },
@@ -297,7 +259,6 @@ app.get("/v1/state/:userId", async (req, res) => {
   }
 });
 
-
 app.get("/v1/points/:username", async (req, res) => {
   try { res.json({ success: true, points: await getUserPoints(req.params.username) }); }
   catch { res.status(500).json({ success: false, points: 0 }); }
@@ -313,10 +274,9 @@ app.post("/v1/interact", async (req, res) => {
     let gelly = await mergeUserDocs(userId);
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    // set display/login names
     if (String(userId).startsWith("U")) {
       gelly.displayName = "Guest Viewer";
-      gelly.loginName   = "guest";
+      gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
@@ -343,7 +303,7 @@ app.post("/v1/interact", async (req, res) => {
       const cost = 10000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
       const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null)   return res.json({ success: false, message: "Point deduction failed. Try again." });
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = nb;
       ok = gelly.updateStats("feed").success;
     } else if (action === "play") {
@@ -354,7 +314,7 @@ app.post("/v1/interact", async (req, res) => {
       const cost = 50000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null)   return res.json({ success: false, message: "Point deduction failed. Try again." });
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = nb;
       gelly.color = action.split(":")[1] || "blue";
       ok = true;
@@ -373,7 +333,7 @@ app.post("/v1/interact", async (req, res) => {
     if (!ok) return res.json({ success: false, message: "Action failed" });
     await gelly.save();
 
-    broadcastState(userId, gelly);   // <-- userId (not user)
+    broadcastState(userId, gelly);
     sendLeaderboard();
     res.json({ success: true, newBalance: userPoints, state: gelly });
   } catch (err) {
@@ -381,7 +341,6 @@ app.post("/v1/interact", async (req, res) => {
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
@@ -398,12 +357,13 @@ app.get("/v1/inventory/:userId", async (req, res) => {
   }
 });
 
-
-// ---- Buy (atomic add; avoids overwriting) ----
+// ---- Buy ----
 app.post("/v1/inventory/buy", async (req, res) => {
   try {
     const userId = canonicalUserId(req.headers.authorization, req.body.userId);
     const { itemId, transactionId } = req.body;
+
+    console.log("[BUY] incoming", { userId, itemId, transactionId });
 
     let gelly = await mergeUserDocs(userId);
     if (!gelly.loginName) {
@@ -422,7 +382,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
 
     if (currency === "jellybeans") {
       const isGuest = !gelly.loginName || gelly.loginName === "guest" || gelly.loginName === "unknown";
-      if (!(isGuest && process.env.ALLOW_GUEST_PURCHASES === "true")) {
+      if (!(isGuest && ALLOW_GUEST_PURCHASES)) {
         const usernameForPoints = gelly.loginName || "guest";
         const userPoints = await getUserPoints(usernameForPoints);
         if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans" });
@@ -443,6 +403,9 @@ app.post("/v1/inventory/buy", async (req, res) => {
     );
 
     const updated = await mergeUserDocs(userId);
+    updated.inventory = normalizeInventory(updated.inventory);
+    await updated.save();
+
     console.log("[BUY] Added:", { userId: String(userId).replace(/^U/, ""), itemId });
     broadcastState(userId, updated);
     sendLeaderboard();
@@ -453,8 +416,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
   }
 });
 
-
-// ---- Equip (merge first, then enforce one-per-type) ----
+// ---- Equip ----
 app.post("/v1/inventory/equip", async (req, res) => {
   try {
     const userId = canonicalUserId(req.headers.authorization, req.body.userId);
@@ -466,11 +428,9 @@ app.post("/v1/inventory/equip", async (req, res) => {
     const norm = (s) => (s ?? "").toString().trim().toLowerCase();
     const want = norm(itemId);
 
-    // find by itemId, or by name
     let item = (gelly.inventory || []).find(i => norm(i.itemId) === want) ||
                (gelly.inventory || []).find(i => norm(i.name) === want);
 
-    // if missing, try one more merge (covers race)
     if (!item) {
       gelly = await mergeUserDocs(userId);
       item = (gelly.inventory || []).find(i => norm(i.itemId) === want) ||
@@ -482,7 +442,6 @@ app.post("/v1/inventory/equip", async (req, res) => {
       return res.json({ success: false, message: "Item not found" });
     }
 
-    // only one equipped per type
     if (equipped) {
       gelly.inventory.forEach(i => {
         if (i.type === item.type && norm(i.itemId) !== norm(item.itemId)) i.equipped = false;
@@ -501,18 +460,13 @@ app.post("/v1/inventory/equip", async (req, res) => {
   }
 });
 
-// Debug probe
-app.get(/^\/v1\/inventory\/equip\/?$/, (_req, res) => {
-  res.json({ success: true, message: "equip endpoint alive; use POST" });
-});
-
 app.get("/v1/store", (_req, res) => res.json({ success: true, store: storeItems }));
 
-// Health & Ping
+// Health
 app.get("/ping", (_req, res) => res.json({ success: true, message: "Server is awake" }));
 app.get("/v1/ping", (_req, res) => res.json({ success: true, message: "Server is awake" }));
 
-// Helpful 404 last
+// 404
 app.use((req, res) => {
   console.warn(`[404] ${req.method} ${req.originalUrl}`);
   res.status(404).json({ success: false, message: "Not Found", method: req.method, path: req.originalUrl });
