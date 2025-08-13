@@ -91,14 +91,17 @@ function canonicalUserId(authHeader, supplied) {
 async function sendLeaderboard() {
   const gellys = await Gelly.find();
   for (const g of gellys) {
-    if (typeof g.applyDecay === "function") { g.applyDecay(); await g.save(); }
+    if (typeof g.applyDecay === "function") { g.applyDecay(); }
+    await updateCareScore(g, null); // decay-only refresh
+    await g.save();
   }
+
   const leaderboard = gellys
     .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
     .map(g => ({
       displayName: g.displayName || g.loginName || "Unknown",
       loginName: g.loginName || "unknown",
-      score: Math.floor((g.energy || 0) + (g.mood || 0) + (g.cleanliness || 0)),
+      score: Math.max(0, Math.round(g.careScore || 0)), // use new score
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
@@ -106,6 +109,7 @@ async function sendLeaderboard() {
   const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, s] of clients) if (s.readyState === WebSocket.OPEN) s.send(payload);
 }
+
 
 // ===== Helpers =====
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -155,6 +159,36 @@ async function deductUserPoints(username, amount) {
     await new Promise(r => setTimeout(r, 1500));
     return newTotal;
   } catch { return null; }
+}
+// ===== Care Score config =====
+const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 48); // tweakable
+const CARE_WEIGHTS = { feed: 60, play: 45, clean: 30 }; // points per action
+
+function decayMomentum(prevMomentum = 0, lastAt, now = new Date()) {
+  if (!prevMomentum || !lastAt) return { momentum: prevMomentum || 0, at: now };
+  const elapsedMs = now - new Date(lastAt);
+  if (elapsedMs <= 0) return { momentum: prevMomentum, at: now };
+  const lambda = Math.log(2) / (CARE_HALF_LIFE_HOURS * 3600_000);
+  const momentum = prevMomentum * Math.exp(-lambda * elapsedMs);
+  return { momentum, at: now };
+}
+
+// Call this any time we show/modify state
+async function updateCareScore(gelly, eventType /* 'feed'|'play'|'clean'|null */) {
+  const now = new Date();
+
+  // decay old momentum → add event points (if any)
+  const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, now).momentum;
+  const add = eventType ? (CARE_WEIGHTS[eventType] || 0) : 0;
+  const momentum = decayed + add;
+
+  // base still tops out at 1500 on perfect stats
+  const base = ((gelly.energy || 0) + (gelly.mood || 0) + (gelly.cleanliness || 0)) * 5;
+
+  gelly.careMomentum = momentum;
+  gelly.careMomentumUpdatedAt = now;
+  gelly.careScore = Math.round(base + momentum);
+  return gelly.careScore;
 }
 
 // single definition
@@ -250,7 +284,7 @@ app.get("/v1/state/:userId", async (req, res) => {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
-
+await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
     res.json({ success: true, state: gelly });
@@ -300,48 +334,52 @@ app.post("/v1/interact", async (req, res) => {
     gelly.lastActionTimes?.set?.(key, now);
 
     let ok = false;
-    if (action === "feed") {
-      const cost = 10000;
-      if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-      const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-      userPoints = nb;
-      ok = gelly.updateStats("feed").success;
-    } else if (action === "play") {
-      ok = gelly.updateStats("play").success;
-    } else if (action === "clean") {
-      ok = gelly.updateStats("clean").success;
-    } else if (action?.startsWith?.("color:")) {
-      const cost = 50000;
-      if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-      userPoints = nb;
-      gelly.color = action.split(":")[1] || "blue";
-      ok = true;
-    } else if (action === "startgame") {
-      gelly.points = 0;
-      gelly.energy = 100;
-      gelly.mood = 100;
-      gelly.cleanliness = 100;
-      gelly.stage = "egg";
-      gelly.lastUpdated = new Date();
-      ok = true;
-    } else {
-      return res.json({ success: false, message: "Unknown action" });
-    }
+let awardedEvent = null;
 
-    if (!ok) return res.json({ success: false, message: "Action failed" });
-    await gelly.save();
+if (action === "feed") {
+  const cost = 10000;
+  if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+  const nb = await deductUserPoints(usernameForPoints, cost);
+  if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+  userPoints = nb;
+  ok = gelly.updateStats("feed").success;
+  awardedEvent = "feed";
+} else if (action === "play") {
+  ok = gelly.updateStats("play").success;
+  awardedEvent = "play";
+} else if (action === "clean") {
+  ok = gelly.updateStats("clean").success;
+  awardedEvent = "clean";
+} else if (action?.startsWith?.("color:")) {
+  const cost = 50000;
+  if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+  const nb = await deductUserPoints(usernameForPoints, cost);
+  if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+  userPoints = nb;
+  gelly.color = action.split(":")[1] || "blue";
+  ok = true;
+} else if (action === "startgame") {
+  gelly.points = 0;
+  gelly.energy = 100;
+  gelly.mood = 100;
+  gelly.cleanliness = 100;
+  gelly.stage = "egg";
+  gelly.lastUpdated = new Date();
+  ok = true;
+} else {
+  return res.json({ success: false, message: "Unknown action" });
+}
 
-    broadcastState(userId, gelly);
-    sendLeaderboard();
-    res.json({ success: true, newBalance: userPoints, state: gelly });
-  } catch (err) {
-    console.error("[ERROR] /v1/interact:", err);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
+if (!ok) return res.json({ success: false, message: "Action failed" });
+
+// 🔥 Recompute care score (adds momentum for feed/play/clean)
+await updateCareScore(gelly, awardedEvent);
+await gelly.save();
+
+broadcastState(userId, gelly);
+sendLeaderboard();
+return res.json({ success: true, newBalance: userPoints, state: gelly });
+
 
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
