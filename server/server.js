@@ -7,7 +7,8 @@ const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
+const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
+const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
 const app = express();
 app.use(express.json());
 
@@ -476,13 +477,28 @@ app.use((req, res) => {
 // ---- Bits verification (Helix: Get Extension Transactions)
 async function verifyBitsTransaction(transactionId, userId) {
   try {
-    const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID; // <-- Extension's client id
-    const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN || process.env.TWITCH_APP_ACCESS_TOKEN;
-
-    if (!EXT_CLIENT_ID || !EXT_APP_TOKEN) {
-      console.warn("[BITS] verify: missing env (TWITCH_EXTENSION_CLIENT_ID/TWITCH_EXTENSION_APP_TOKEN)");
+    const url = `https://api.twitch.tv/helix/extensions/transactions?extension_id=${EXT_CLIENT_ID}&id=${transactionId}`;
+    const res = await fetch(url, {
+      headers: {
+        'Client-ID': EXT_CLIENT_ID,
+        'Authorization': `Bearer ${EXT_APP_TOKEN}`,
+      }
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      console.error('[BITS] verify HTTP', res.status, JSON.stringify(data));
       return false;
     }
+    const tx = data.data && data.data[0];
+    return !!(tx &&
+      tx.transaction_id === transactionId &&
+      tx.user_id === userId &&
+      tx.product_type === 'BITS_IN_EXTENSION');
+  } catch (e) {
+    console.error('[BITS] verify error', e);
+    return false;
+  }
+}
 
     // Required: extension_id + id
     const params = new URLSearchParams({
