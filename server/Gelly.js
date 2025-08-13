@@ -1,4 +1,4 @@
-// Gelly.js
+// server/models/Gelly.js
 const mongoose = require("mongoose");
 
 /** Inventory item subdoc */
@@ -17,9 +17,8 @@ const GellySchema = new mongoose.Schema(
     userId: { type: String, required: true, unique: true, index: true },
 
     displayName: { type: String, default: "Guest Viewer" },
-    loginName: { type: String, default: "guest" },
+    loginName:  { type: String, default: "guest" },
 
-    // core stats
     points: { type: Number, default: 0 },
     energy: { type: Number, default: 100 },
     mood: { type: Number, default: 50 },
@@ -30,22 +29,22 @@ const GellySchema = new mongoose.Schema(
 
     lastUpdated: { type: Date, default: Date.now },
 
-    // cooldowns: key -> Date
+    // cooldown map
     lastActionTimes: { type: Map, of: Date, default: {} },
 
-    // inventory you’re trying to write to
+    // <— this MUST exist or $addToSet will be ignored by strict mode
     inventory: { type: [InventoryItemSchema], default: [] },
   },
   { timestamps: true, minimize: false, strict: true }
 );
 
-/** Simple decay — tweak as you like */
-GellySchema.methods.applyDecay = function applyDecay() {
+// Methods
+GellySchema.methods.applyDecay = function () {
   const now = Date.now();
   const then = this.lastUpdated ? this.lastUpdated.getTime() : now;
   const mins = Math.max(0, (now - then) / 60000);
   if (mins > 1) {
-    const decay = Math.floor(mins / 5); // every 5 min
+    const decay = Math.floor(mins / 5);
     this.energy = Math.max(0, this.energy - decay);
     this.mood = Math.max(0, this.mood - Math.floor(decay / 2));
     this.cleanliness = Math.max(0, this.cleanliness - Math.floor(decay / 3));
@@ -53,8 +52,7 @@ GellySchema.methods.applyDecay = function applyDecay() {
   }
 };
 
-/** Update stats for an action */
-GellySchema.methods.updateStats = function updateStats(action) {
+GellySchema.methods.updateStats = function (action) {
   const clamp = (n) => Math.max(0, Math.min(100, n));
   if (action === "feed") {
     this.energy = clamp(this.energy + 15);
@@ -66,7 +64,6 @@ GellySchema.methods.updateStats = function updateStats(action) {
     this.cleanliness = clamp(this.cleanliness + 20);
     this.mood = clamp(this.mood + 3);
   }
-  // evolve example
   if (this.stage === "egg" && this.energy >= 80 && this.mood >= 60 && this.cleanliness >= 60) {
     this.stage = "blob";
   } else if (this.stage === "blob" && this.energy >= 90 && this.mood >= 80 && this.cleanliness >= 80) {
@@ -76,4 +73,5 @@ GellySchema.methods.updateStats = function updateStats(action) {
   return { success: true };
 };
 
-module.exports = mongoose.model("Gelly", GellySchema);
+// ✅ hot-reload/duplicate-import safe export
+module.exports = mongoose.models.Gelly || mongoose.model("Gelly", GellySchema);
