@@ -474,16 +474,33 @@ app.use((req, res) => {
 
 // Bits verification
 async function verifyBitsTransaction(transactionId, userId) {
+  if (!transactionId) return false;
   try {
-    const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?id=${transactionId}`, {
-      headers: { "Client-ID": process.env.TWITCH_CLIENT_ID, "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}` }
-    });
-    if (!res.ok) return false;
-    const data = await res.json();
-    const tx = data.data && data.data[0];
-    return !!(tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION");
-  } catch { return false; }
+    const res = await fetch(
+      `https://api.twitch.tv/helix/extensions/transactions?id=${encodeURIComponent(transactionId)}`,
+      {
+        headers: {
+          "Client-ID": process.env.TWITCH_CLIENT_ID,
+          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`, // app token for THIS extension
+        },
+      }
+    );
+    const text = await res.text();
+    if (!res.ok) {
+      console.warn("[BITS] verify HTTP", res.status, text);
+      return false;
+    }
+    const data = JSON.parse(text);
+    const tx = data?.data?.[0];
+    const ok = !!(tx && tx.user_id === String(userId) && tx.product_type === "BITS_IN_EXTENSION");
+    if (!ok) console.warn("[BITS] verify mismatch", { expectedUser: String(userId), tx });
+    return ok;
+  } catch (e) {
+    console.error("[BITS] verify error:", e);
+    return false;
+  }
 }
+
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
