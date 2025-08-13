@@ -316,7 +316,14 @@ app.post("/v1/interact", async (req, res) => {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
-    await gelly.save();
+
+    // Ensure cooldown map is usable (Map if schema wasn’t set as Map)
+    if (!(gelly.lastActionTimes instanceof Map)) {
+      const init = gelly.lastActionTimes && typeof gelly.lastActionTimes === "object"
+        ? Object.entries(gelly.lastActionTimes)
+        : [];
+      gelly.lastActionTimes = new Map(init);
+    }
 
     const usernameForPoints = gelly.loginName || "guest";
     let userPoints = await getUserPoints(usernameForPoints);
@@ -326,59 +333,64 @@ app.post("/v1/interact", async (req, res) => {
     const cooldown = ACTION_COOLDOWNS[key] || 60000;
 
     const now = new Date();
-    const last = gelly.lastActionTimes?.get?.(key) || null;
+    const last = gelly.lastActionTimes.get(key) || null;
     if (last && now - last < cooldown) {
       const remaining = Math.ceil((cooldown - (now - last)) / 1000);
       return res.json({ success: false, message: `Please wait ${remaining}s before ${key} again.` });
     }
-    gelly.lastActionTimes?.set?.(key, now);
+    gelly.lastActionTimes.set(key, now);
 
     let ok = false;
-let awardedEvent = null;
+    let awardedEvent = null;
 
-if (action === "feed") {
-  const cost = 10000;
-  if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
-  const nb = await deductUserPoints(usernameForPoints, cost);
-  if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-  userPoints = nb;
-  ok = gelly.updateStats("feed").success;
-  awardedEvent = "feed";
-} else if (action === "play") {
-  ok = gelly.updateStats("play").success;
-  awardedEvent = "play";
-} else if (action === "clean") {
-  ok = gelly.updateStats("clean").success;
-  awardedEvent = "clean";
-} else if (action?.startsWith?.("color:")) {
-  const cost = 50000;
-  if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-  const nb = await deductUserPoints(usernameForPoints, cost);
-  if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-  userPoints = nb;
-  gelly.color = action.split(":")[1] || "blue";
-  ok = true;
-} else if (action === "startgame") {
-  gelly.points = 0;
-  gelly.energy = 100;
-  gelly.mood = 100;
-  gelly.cleanliness = 100;
-  gelly.stage = "egg";
-  gelly.lastUpdated = new Date();
-  ok = true;
-} else {
-  return res.json({ success: false, message: "Unknown action" });
-}
+    if (action === "feed") {
+      const cost = 10000;
+      if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to feed." });
+      const nb = await deductUserPoints(usernameForPoints, cost);
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      userPoints = nb;
+      ok = gelly.updateStats("feed").success;
+      awardedEvent = "feed";
+    } else if (action === "play") {
+      ok = gelly.updateStats("play").success;
+      awardedEvent = "play";
+    } else if (action === "clean") {
+      ok = gelly.updateStats("clean").success;
+      awardedEvent = "clean";
+    } else if (action?.startsWith?.("color:")) {
+      const cost = 50000;
+      if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+      const nb = await deductUserPoints(usernameForPoints, cost);
+      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
+      userPoints = nb;
+      gelly.color = action.split(":")[1] || "blue";
+      ok = true;
+    } else if (action === "startgame") {
+      gelly.points = 0;
+      gelly.energy = 100;
+      gelly.mood = 100;
+      gelly.cleanliness = 100;
+      gelly.stage = "egg";
+      gelly.lastUpdated = new Date();
+      ok = true;
+    } else {
+      return res.json({ success: false, message: "Unknown action" });
+    }
 
-if (!ok) return res.json({ success: false, message: "Action failed" });
+    if (!ok) return res.json({ success: false, message: "Action failed" });
 
-// 🔥 Recompute care score (adds momentum for feed/play/clean)
-await updateCareScore(gelly, awardedEvent);
-await gelly.save();
+    // Update care score (adds momentum for feed/play/clean)
+    await updateCareScore(gelly, awardedEvent);
+    await gelly.save();
 
-broadcastState(userId, gelly);
-sendLeaderboard();
-return res.json({ success: true, newBalance: userPoints, state: gelly });
+    broadcastState(userId, gelly);
+    sendLeaderboard();
+    return res.json({ success: true, newBalance: userPoints, state: gelly });
+  } catch (err) {
+    console.error("[ERROR] /v1/interact:", err);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
 
 
 // ---- Inventory (read) ----
