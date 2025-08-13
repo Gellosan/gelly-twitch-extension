@@ -49,227 +49,16 @@ const twitchClient = new tmi.Client({
 twitchClient.connect()
   .then(() => console.log("✅ Connected to Twitch chat as", process.env.TWITCH_BOT_USERNAME))
   .catch(console.error);
-if (ENABLE_DUELS) {
-  twitchClient.on("message", async (channel, tags, msg, self) => {
-    if (self) return;
-    const text = (msg || "").trim();
-    const sender = parseLogin(tags.username);
 
-    // Commands we care about
-    const isDuelCmd   = /^!(gelly\s+)?duel\b/i.test(text);
-    const isAcceptCmd = /^!(gelly\s+)?accept\b/i.test(text);
-    const isDeclineCmd= /^!(gelly\s+)?decline\b/i.test(text);
-
-    if (!isDuelCmd && !isAcceptCmd && !isDeclineCmd) return;
-
-    try {
-      // --- !duel @user 12345 ---
-      if (isDuelCmd) {
-        // parse "!duel @target 1000"
-        const parts = text.split(/\s+/).filter(Boolean);
-        // allow "!gelly duel", so target is parts[2], bet is parts[3] in that case
-        const idx = /^!gelly$/i.test(parts[0]) ? 2 : 1;
-        const target = parseLogin(parts[idx]);
-        const betStr = parts[idx + 1] || "";
-        const bet = Math.max(DUEL_MIN_BET, Math.min(DUEL_MAX_BET, parseInt(betStr, 10) || 0));
-
-        if (!target) {
-          twitchClient.say(channel, `@${sender} usage: !duel @username <bet>. Min ${DUEL_MIN_BET}, max ${DUEL_MAX_BET}.`);
-          return;
-        }
-        if (sender === target) {
-          twitchClient.say(channel, `@${sender} you can’t duel yourself 😅`);
-          return;
-        }
-        if (activeByUser.has(sender) || activeByUser.has(target)) {
-          twitchClient.say(channel, `@${sender} someone is already in a duel. Try again in a moment.`);
-          return;
-        }
-        if (!bet || bet < DUEL_MIN_BET) {
-          twitchClient.say(channel, `@${sender} minimum bet is ${DUEL_MIN_BET}.`);
-          return;
-        }
-
-        // Check both have enough beans
-        const p1 = await getUserPoints(sender);
-        const p2 = await getUserPoints(target);
-        if (p1 < bet) { twitchClient.say(channel, `@${sender} you don’t have enough Jellybeans for a ${bet} bet.`); return; }
-        if (p2 < bet) { twitchClient.say(channel, `@${sender} ${target} doesn’t have enough Jellybeans for ${bet}.`); return; }
-
-        // Lock them
-        activeByUser.add(sender);
-        activeByUser.add(target);
-
-        // Register challenge
-        pendingDuels.set(target, { challengerLogin: sender, bet, createdAt: Date.now() });
-        twitchClient.say(channel, `@${target}, @${sender} has challenged you to a GELLY DUEL for ${bet} 🫘! Type !accept to fight (60s).`);
-        return;
-      }
-
-      // --- !accept [@challenger] ---
-      if (isAcceptCmd) {
-        const parts = text.split(/\s+/).filter(Boolean);
-        const maybeChallenger = parseLogin(parts[1] || "");
-        const challenge = pendingDuels.get(sender); // sender is the challenged user
-
-        if (!challenge) {
-          twitchClient.say(channel, `@${sender} you don’t have a pending duel.`);
-          return;
-        }
-        // if a challenger was specified, make sure it matches
-        if (maybeChallenger && maybeChallenger !== challenge.challengerLogin) {
-          twitchClient.say(channel, `@${sender} your pending challenger is @${challenge.challengerLogin}, not @${maybeChallenger}.`);
-          return;
-        }
-
-        // Consume the challenge
-        pendingDuels.delete(sender);
-
-        const challenger = challenge.challengerLogin;
-        const target = sender;
-        const bet = challenge.bet;
-
-        // Refresh gellys & scores
-        const g1 = await getGellyByLogin(challenger);
-        const g2 = await getGellyByLogin(target);
-        await updateCareScore(g1, null); await g1.save();
-        await updateCareScore(g2, null); await g2.save();
-
-        const p1 = await getUserPoints(challenger);
-        const p2 = await getUserPoints(target);
-        if (p1 < bet || p2 < bet) {
-          twitchClient.say(channel, `Duel canceled: one of you no longer has ${bet} Jellybeans.`);
-          activeByUser.delete(challenger); activeByUser.delete(target);
-          return;
-        }
-
-        const cs1 = Number(g1.careScore || 0);
-        const cs2 = Number(g2.careScore || 0);
-        const probChallenger = weightedWinProb(cs1, cs2);
-        const roll = Math.random();
-        const winner = roll < probChallenger ? challenger : target;
-        const loser  = winner === challenger ? target : challenger;
-
-        // Points settle
-        await adjustUserPoints(winner, +bet);
-        await adjustUserPoints(loser,  -bet);
-
-        // Care settle (±5%)
-        const gW = winner === challenger ? g1 : g2;
-        const gL = winner === challenger ? g2 : g1;
-        await applyDuelCareDelta(gW, +0.05);
-        await applyDuelCareDelta(gL, -0.05);
-
-        // Broadcast both states (if we know their userId)
-        if (g1.userId) broadcastState(g1.userId, g1);
-        if (g2.userId) broadcastState(g2.userId, g2);
-        sendLeaderboard();
-
-        const pretty = (n) => Math.round(n).toLocaleString();
-        twitchClient.say(
-          channel,
-          `⚔️ Gelly Duel: @${challenger} (care ${pretty(cs1)}) vs @${target} (care ${pretty(cs2)}). `
-          + `Winner: @${winner}! +${bet}🫘 & +5% care. @${loser} loses ${bet}🫘 & 5% care.`
-        );
-
-        activeByUser.delete(challenger); activeByUser.delete(target);
-        return;
-      }
-
-      // --- !decline ---
-      if (isDeclineCmd) {
-        const challenge = pendingDuels.get(sender);
-        if (!challenge) {
-          twitchClient.say(channel, `@${sender} you don’t have a pending duel.`);
-          return;
-        }
-        pendingDuels.delete(sender);
-        activeByUser.delete(sender);
-        activeByUser.delete(challenge.challengerLogin);
-        twitchClient.say(channel, `@${sender} declined the duel. All good!`);
-        return;
-      }
-    } catch (e) {
-      console.error("[DUEL] error:", e);
-      twitchClient.say(channel, `Something broke while processing the duel command. Sorry!`);
-    }
-  });
-}
-
-// ===== MongoDB =====
-mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
-  .then(() => console.log("✅ MongoDB connected"))
-  .catch(err => console.error("❌ Mongo Error:", err));
-
-// ===== WebSocket =====
-const server = require("http").createServer(app);
-const wss = new WebSocket.Server({ server });
-const clients = new Map();
-
-wss.on("connection", (ws, req) => {
-  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const userId = searchParams.get("user");
-  if (userId) {
-    clients.set(userId, ws);
-    console.log(`🔌 WebSocket connected for user: ${userId}`);
-    sendLeaderboard().catch(console.error);
-  }
-  ws.on("close", () => {
-    if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
-  });
-});
-
-function broadcastState(userId, gelly) {
-  const ws = clients.get(userId) || clients.get(`U${userId}`) || clients.get(String(userId).replace(/^U/, ""));
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
-  }
-}
-function getRealTwitchId(authHeader) {
-  if (!authHeader) return null;
-  try { return jwt.decode(authHeader.split(" ")[1])?.user_id || null; } catch { return null; }
-}
-function canonicalUserId(authHeader, supplied) {
-  const real = getRealTwitchId(authHeader);
-  return real || supplied;
-}
-
-async function sendLeaderboard() {
-  const gellys = await Gelly.find();
-  for (const g of gellys) {
-    if (typeof g.applyDecay === "function") { g.applyDecay(); }
-    await updateCareScore(g, null); // decay-only refresh
-    await g.save();
-  }
-
-  const leaderboard = gellys
-    .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
-    .map(g => ({
-      displayName: g.displayName || g.loginName || "Unknown",
-      loginName: g.loginName || "unknown",
-      score: Math.max(0, Math.round(g.careScore || 0)), // use new score
-    }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 10);
-
-  const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
-  for (const [, s] of clients) if (s.readyState === WebSocket.OPEN) s.send(payload);
-}
-
-
-// ===== Helpers =====
-const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
-const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
-const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
-const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
-const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
-const ALLOW_GUEST_PURCHASES = process.env.ALLOW_GUEST_PURCHASES === "true";
-// ===== Duels (chat minigame) =====
-const ENABLE_DUELS = process.env.ENABLE_DUELS !== "false";
-const DUEL_TTL_MS   = Number(process.env.DUEL_TTL_MS   || 60_000);
-const DUEL_MIN_BET  = Number(process.env.DUEL_MIN_BET  || 1000);
-const DUEL_MAX_BET  = Number(process.env.DUEL_MAX_BET  || 500000);
-const DUEL_ALPHA    = Number(process.env.DUEL_ALPHA    || 1.0); // weighting strength
+// ----- Duel command config (declare BEFORE using) -----
+const ENABLE_DUELS      = process.env.ENABLE_DUELS === "true";
+const DUEL_CMD          = process.env.DUEL_CMD || "!gellyduel";
+const DUEL_ACCEPT_CMD   = process.env.DUEL_ACCEPT_CMD || "!gellyaccept";
+const DUEL_DECLINE_CMD  = process.env.DUEL_DECLINE_CMD || "!gellydecline"; // optional
+const DUEL_MIN_BET      = Number(process.env.DUEL_MIN_BET || 1000);
+const DUEL_MAX_BET      = Number(process.env.DUEL_MAX_BET || 500000);
+const DUEL_TTL_MS       = Number(process.env.DUEL_TTL_MS || 60_000);
+const DUEL_ALPHA        = Number(process.env.DUEL_ALPHA || 1.25);
 
 // pending challenges keyed by challenged login
 const pendingDuels = new Map(); // targetLogin -> { challengerLogin, bet, createdAt }
@@ -354,6 +143,216 @@ function clearExpiredChallenges() {
 }
 setInterval(clearExpiredChallenges, 5000);
 
+if (ENABLE_DUELS) {
+  twitchClient.on("message", async (channel, tags, msg, self) => {
+    if (self) return;
+    const text = (msg || "").trim();
+    const low  = text.toLowerCase();
+    const sender = parseLogin(tags.username);
+
+    const isDuelCmd     = low.startsWith(DUEL_CMD);         // "!gellyduel"
+    const isAcceptCmd   = low.startsWith(DUEL_ACCEPT_CMD);  // "!gellyaccept"
+    const isDeclineCmd  = low.startsWith(DUEL_DECLINE_CMD); // "!gellydecline" (optional)
+
+    if (!isDuelCmd && !isAcceptCmd && !isDeclineCmd) return;
+
+    try {
+      // --- !gellyduel @user 12345 ---
+      if (isDuelCmd) {
+        const rest = text.slice(DUEL_CMD.length).trim();
+        const [rawTarget, betStr] = rest.split(/\s+/);
+        const target = parseLogin(rawTarget);
+        const betNum = parseInt(betStr, 10);
+        const bet = Math.max(DUEL_MIN_BET, Math.min(DUEL_MAX_BET, isFinite(betNum) ? betNum : 0));
+
+        if (!target) {
+          twitchClient.say(channel, `@${sender} usage: ${DUEL_CMD} @username <bet>. Min ${DUEL_MIN_BET}, max ${DUEL_MAX_BET}.`);
+          return;
+        }
+        if (sender === target) { twitchClient.say(channel, `@${sender} you can’t duel yourself 😅`); return; }
+        if (activeByUser.has(sender) || activeByUser.has(target)) {
+          twitchClient.say(channel, `@${sender} someone is already in a duel. Try again in a moment.`);
+          return;
+        }
+        if (!bet || bet < DUEL_MIN_BET) {
+          twitchClient.say(channel, `@${sender} minimum bet is ${DUEL_MIN_BET}.`);
+          return;
+        }
+
+        // Check both have enough beans
+        const p1 = await getUserPoints(sender);
+        const p2 = await getUserPoints(target);
+        if (p1 < bet) { twitchClient.say(channel, `@${sender} you don’t have enough Jellybeans for a ${bet} bet.`); return; }
+        if (p2 < bet) { twitchClient.say(channel, `@${sender} ${target} doesn’t have enough Jellybeans for ${bet}.`); return; }
+
+        // Lock them + register challenge
+        activeByUser.add(sender);
+        activeByUser.add(target);
+        pendingDuels.set(target, { challengerLogin: sender, bet, createdAt: Date.now() });
+
+        twitchClient.say(
+          channel,
+          `@${target}, @${sender} has challenged you to a GELLY DUEL for ${bet} 🫘! ` +
+          `Type ${DUEL_ACCEPT_CMD} to fight (${Math.round(DUEL_TTL_MS/1000)}s).`
+        );
+        return;
+      }
+
+      // --- !gellyaccept [@challenger] ---
+      if (isAcceptCmd) {
+        const rest = text.slice(DUEL_ACCEPT_CMD.length).trim();
+        const maybeChallenger = parseLogin(rest.split(/\s+/)[0] || "");
+        const challenge = pendingDuels.get(sender); // sender is the challenged user
+
+        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
+        if (maybeChallenger && maybeChallenger !== challenge.challengerLogin) {
+          twitchClient.say(channel, `@${sender} your pending challenger is @${challenge.challengerLogin}, not @${maybeChallenger}.`);
+          return;
+        }
+
+        // Consume the challenge
+        pendingDuels.delete(sender);
+
+        const challenger = challenge.challengerLogin;
+        const target = sender;
+        const bet = challenge.bet;
+
+        // Refresh gellys & scores
+        const g1 = await getGellyByLogin(challenger);
+        const g2 = await getGellyByLogin(target);
+        await updateCareScore(g1, null); await g1.save();
+        await updateCareScore(g2, null); await g2.save();
+
+        // Re-check points
+        const p1 = await getUserPoints(challenger);
+        const p2 = await getUserPoints(target);
+        if (p1 < bet || p2 < bet) {
+          twitchClient.say(channel, `Duel canceled: one of you no longer has ${bet} Jellybeans.`);
+          activeByUser.delete(challenger); activeByUser.delete(target);
+          return;
+        }
+
+        // Weighted random winner
+        const cs1 = Number(g1.careScore || 0);
+        const cs2 = Number(g2.careScore || 0);
+        const probChallenger = weightedWinProb(cs1, cs2);
+        const roll = Math.random();
+        const winner = roll < probChallenger ? challenger : target;
+        const loser  = winner === challenger ? target : challenger;
+
+        // Settle beans
+        await adjustUserPoints(winner, +bet);
+        await adjustUserPoints(loser,  -bet);
+
+        // Settle care (±5%)
+        const gW = winner === challenger ? g1 : g2;
+        const gL = winner === challenger ? g2 : g1;
+        await applyDuelCareDelta(gW, +0.05);
+        await applyDuelCareDelta(gL, -0.05);
+
+        // Broadcast (if their userIds are known/connected)
+        if (g1.userId) broadcastState(g1.userId, g1);
+        if (g2.userId) broadcastState(g2.userId, g2);
+        sendLeaderboard();
+
+        const pretty = (n) => Math.round(n).toLocaleString();
+        twitchClient.say(
+          channel,
+          `⚔️ Gelly Duel: @${challenger} (care ${pretty(cs1)}) vs @${target} (care ${pretty(cs2)}). ` +
+          `Winner: @${winner}! +${bet}🫘 & +5% care. @${loser} loses ${bet}🫘 & 5% care.`
+        );
+
+        activeByUser.delete(challenger); activeByUser.delete(target);
+        return;
+      }
+
+      // --- !gellydecline (optional) ---
+      if (isDeclineCmd) {
+        const challenge = pendingDuels.get(sender);
+        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
+        pendingDuels.delete(sender);
+        activeByUser.delete(sender);
+        activeByUser.delete(challenge.challengerLogin);
+        twitchClient.say(channel, `@${sender} declined the duel. All good!`);
+        return;
+      }
+    } catch (e) {
+      console.error("[DUEL] error:", e);
+      twitchClient.say(channel, `Something broke while processing the duel command. Sorry!`);
+      // Last-ditch unlock in case of unexpected error
+      activeByUser.delete(sender);
+    }
+  });
+}
+
+// ===== MongoDB =====
+mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
+  .then(() => console.log("✅ MongoDB connected"))
+  .catch(err => console.error("❌ Mongo Error:", err));
+
+// ===== WebSocket =====
+const server = require("http").createServer(app);
+const wss = new WebSocket.Server({ server });
+const clients = new Map();
+
+wss.on("connection", (ws, req) => {
+  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+  const userId = searchParams.get("user");
+  if (userId) {
+    clients.set(userId, ws);
+    console.log(`🔌 WebSocket connected for user: ${userId}`);
+    sendLeaderboard().catch(console.error);
+  }
+  ws.on("close", () => {
+    if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
+  });
+});
+
+function broadcastState(userId, gelly) {
+  const ws = clients.get(userId) || clients.get(`U${userId}`) || clients.get(String(userId).replace(/^U/, ""));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "update", state: gelly }));
+  }
+}
+function getRealTwitchId(authHeader) {
+  if (!authHeader) return null;
+  try { return jwt.decode(authHeader.split(" ")[1])?.user_id || null; } catch { return null; }
+}
+function canonicalUserId(authHeader, supplied) {
+  const real = getRealTwitchId(authHeader);
+  return real || supplied;
+}
+
+async function sendLeaderboard() {
+  const gellys = await Gelly.find();
+  for (const g of gellys) {
+    if (typeof g.applyDecay === "function") { g.applyDecay(); }
+    await updateCareScore(g, null); // decay-only refresh
+    await g.save();
+  }
+
+  const leaderboard = gellys
+    .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
+    .map(g => ({
+      displayName: g.displayName || g.loginName || "Unknown",
+      loginName: g.loginName || "unknown",
+      score: Math.max(0, Math.round(g.careScore || 0)), // use new score
+    }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 10);
+
+  const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
+  for (const [, s] of clients) if (s.readyState === WebSocket.OPEN) s.send(payload);
+}
+
+// ===== Helpers =====
+const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
+const TWITCH_APP_ACCESS_TOKEN = process.env.TWITCH_APP_ACCESS_TOKEN;
+const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
+const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
+const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
+const ALLOW_GUEST_PURCHASES = process.env.ALLOW_GUEST_PURCHASES === "true";
+
 async function fetchTwitchUserData(userId) {
   try {
     const cleanId = String(userId || "").startsWith("U") ? String(userId).substring(1) : String(userId);
@@ -395,6 +394,7 @@ async function deductUserPoints(username, amount) {
     return newTotal;
   } catch { return null; }
 }
+
 // ===== Care Score config =====
 const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 48); // tweakable
 const CARE_WEIGHTS = { feed: 60, play: 45, clean: 30 }; // points per action
@@ -491,7 +491,6 @@ async function mergeUserDocs(userId) {
   // optional: await Gelly.deleteOne({ _id: opaque._id });
   return real;
 }
-
 // ===== Store =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
