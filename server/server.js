@@ -473,33 +473,61 @@ app.use((req, res) => {
 });
 
 // Bits verification
+// ---- Bits verification (Helix: Get Extension Transactions)
 async function verifyBitsTransaction(transactionId, userId) {
-  if (!transactionId) return false;
   try {
-    const res = await fetch(
-      `https://api.twitch.tv/helix/extensions/transactions?id=${encodeURIComponent(transactionId)}`,
-      {
-        headers: {
-          "Client-ID": process.env.TWITCH_CLIENT_ID,
-          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`, // app token for THIS extension
-        },
-      }
-    );
-    const text = await res.text();
-    if (!res.ok) {
-      console.warn("[BITS] verify HTTP", res.status, text);
+    const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID; // <-- Extension's client id
+    const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN || process.env.TWITCH_APP_ACCESS_TOKEN;
+
+    if (!EXT_CLIENT_ID || !EXT_APP_TOKEN) {
+      console.warn("[BITS] verify: missing env (TWITCH_EXTENSION_CLIENT_ID/TWITCH_EXTENSION_APP_TOKEN)");
       return false;
     }
-    const data = JSON.parse(text);
+
+    // Required: extension_id + id
+    const params = new URLSearchParams({
+      extension_id: EXT_CLIENT_ID,
+      id: transactionId
+    });
+
+    const url = `https://api.twitch.tv/helix/extensions/transactions?${params.toString()}`;
+    const res = await fetch(url, {
+      headers: {
+        "Client-ID": EXT_CLIENT_ID,                   // must be the Extension's client id
+        "Authorization": `Bearer ${EXT_APP_TOKEN}`,   // app access token for the Extension
+        "Content-Type": "application/json"
+      }
+    });
+
+    const text = await res.text();
+    if (!res.ok) {
+      console.warn(`[BITS] verify HTTP ${res.status} ${text}`);
+      return false;
+    }
+
+    let data;
+    try { data = JSON.parse(text); } catch { data = null; }
     const tx = data?.data?.[0];
-    const ok = !!(tx && tx.user_id === String(userId) && tx.product_type === "BITS_IN_EXTENSION");
-    if (!ok) console.warn("[BITS] verify mismatch", { expectedUser: String(userId), tx });
-    return ok;
+    if (!tx) {
+      console.warn("[BITS] verify: no transaction returned");
+      return false;
+    }
+
+    // Accept either new or old shape: product.type OR product_type
+    const productType = tx.product?.type || tx.product_type;
+    const okUser = String(tx.user_id) === String(userId);
+    const okType = productType === "BITS_IN_EXTENSION";
+
+    if (!okUser || !okType) {
+      console.warn("[BITS] verify: validation failed", { okUser, okType, txUser: tx.user_id, wantUser: String(userId), productType });
+    }
+    return okUser && okType;
   } catch (e) {
     console.error("[BITS] verify error:", e);
     return false;
   }
 }
+
 
 
 const PORT = process.env.PORT || 10000;
