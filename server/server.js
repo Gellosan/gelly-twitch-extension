@@ -368,19 +368,62 @@ async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
 }
-async function getUserPoints(username) {
+// --- points cache (5s) to avoid SE thrash + rate limits
+const _pointsCache = new Map(); // key: login -> { points, ts }
+const POINTS_CACHE_MS = 5000;
+
+function _normLogin(u) {
+  return String(u || "").trim().replace(/^@/, "").toLowerCase();
+}
+
+async function getUserPoints(usernameRaw) {
   try {
+    const username = _normLogin(usernameRaw);
     if (!username || username === "guest" || username === "unknown") return 0;
+
+    // cache hit?
+    const hit = _pointsCache.get(username);
+    const now = Date.now();
+    if (hit && (now - hit.ts) < POINTS_CACHE_MS) return hit.points;
+
     const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
     const res = await fetchWithTimeout(
-      (signal) => fetch(url, { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` }, signal }),
+      (signal) => fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${STREAM_ELEMENTS_JWT}`,
+          "Accept": "application/json"
+        },
+        signal
+      }),
       2500
     );
-    if (!res.ok) return 0;
-    const data = await res.json();
-    return typeof data?.points === "number" ? data.points : 0;
-  } catch { return 0; }
+
+    if (res.status === 404) {
+      // Normal for users who never earned points yet.
+      // Treat as 0, but cache briefly to keep UI stable.
+      _pointsCache.set(username, { points: 0, ts: now });
+      return 0;
+    }
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      console.warn("[SE] points HTTP", res.status, text);
+      // don't cache errors—try again on next call
+      return 0;
+    }
+
+    const data = await res.json().catch(() => ({}));
+    const pts = (typeof data?.points === "number") ? data.points : 0;
+
+    _pointsCache.set(username, { points: pts, ts: now });
+    return pts;
+  } catch (e) {
+    console.warn("[SE] points error:", e?.message || e);
+    return 0;
+  }
 }
+
 async function deductUserPoints(username, amount) {
   try {
     const current = await getUserPoints(username);
