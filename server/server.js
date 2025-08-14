@@ -533,7 +533,9 @@ app.get("/v1/state/:userId", async (req, res) => {
 await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
-    res.json({ success: true, state: gelly });
+sendLeaderboard(); // ensures first-time users appear immediately
+res.json({ success: true, state: gelly });
+
   } catch (e) {
     console.error("[/v1/state] error", e);
     res.status(500).json({ success: false, message: "Server error" });
