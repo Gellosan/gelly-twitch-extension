@@ -78,8 +78,10 @@ function weightedWinProb(aCare, bCare) {
 
 async function setUserPoints(username, newTotal) {
   try {
+    // normalize to lower-case for StreamElements
+    const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
     const total = Math.max(0, Math.floor(newTotal));
-    const cmd = `!setpoints ${username} ${total}`;
+    const cmd = `!setpoints ${uname} ${total}`;
     console.log("[IRC] →", cmd);
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise(r => setTimeout(r, 1200));
@@ -426,9 +428,11 @@ async function getUserPoints(usernameRaw) {
 
 async function deductUserPoints(username, amount) {
   try {
-    const current = await getUserPoints(username);
+    // normalize to lower-case for StreamElements
+    const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
+    const current = await getUserPoints(uname);
     const newTotal = Math.max(0, current - Math.abs(amount));
-    const cmd = `!setpoints ${username} ${newTotal}`;
+    const cmd = `!setpoints ${uname} ${newTotal}`;
     console.log("[IRC] →", cmd);
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise(r => setTimeout(r, 1500));
@@ -571,13 +575,13 @@ app.get("/v1/state/:userId", async (req, res) => {
       gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
-      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
     }
-await updateCareScore(gelly, null);
+    await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
-sendLeaderboard(); // ensures first-time users appear immediately
-res.json({ success: true, state: gelly });
+    sendLeaderboard(); // ensures first-time users appear immediately
+    res.json({ success: true, state: gelly });
 
   } catch (e) {
     console.error("[/v1/state] error", e);
@@ -610,7 +614,7 @@ app.post("/v1/interact", async (req, res) => {
       gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
-      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
     }
 
     // Ensure cooldown map is usable (Map if schema wasn’t set as Map)
@@ -716,7 +720,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
     if (!gelly.loginName) {
       if (!String(userId).startsWith("U")) {
         const td = await fetchTwitchUserData(userId);
-        if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
+        if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
       }
       if (!gelly.loginName) { gelly.displayName = "Guest Viewer"; gelly.loginName = "guest"; }
       await gelly.save();
