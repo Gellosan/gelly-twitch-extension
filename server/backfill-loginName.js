@@ -4,7 +4,7 @@ const mongoose = require("mongoose");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 
 // 👉 If your model lives at server/models/Gelly.js, use that path:
-const Gelly = require("./server/models/Gelly.js"); // <- change to "./Gelly.js" if your file is there
+const Gelly = require("./server/Gelly.js"); // <- change to "./Gelly.js" if your file is there
 
 const MONGODB_URI           = process.env.MONGODB_URI;
 const TWITCH_CLIENT_ID      = process.env.TWITCH_CLIENT_ID;
