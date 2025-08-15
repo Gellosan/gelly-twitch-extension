@@ -17,7 +17,7 @@ try {
 }
 
 // ✅ FIX: Correct path to the merged model at server/models/Gelly.js
-const Gelly = require("./server/models/Gelly");
+const Gelly = require(".models/Gelly");
 
 const app = express(); // ✅ declare before use
 
