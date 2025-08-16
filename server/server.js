@@ -9,13 +9,10 @@ const tmi = require("tmi.js");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
 const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
 const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
+
 const app = express();
 app.use(express.json());
-const cors = require('cors');
 
-app.use('/v1/points', require('./routes/points'));
-
-module.exports = app;
 // ===== CORS =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
@@ -44,6 +41,9 @@ app.use((req, res, next) => {
 
 // tiny req logger
 app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
+
+// mount points routes AFTER headers/logger
+app.use('/v1/points', require('./routes/points'));
 
 // ===== Twitch Bot =====
 const twitchClient = new tmi.Client({
@@ -89,6 +89,8 @@ async function setUserPoints(username, newTotal) {
     console.log("[IRC] →", cmd);
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise(r => setTimeout(r, 1200));
+    // hot-update our short cache so UI reflects instantly
+    _pointsCache.set(uname, { points: total, ts: Date.now() });
     return true;
   } catch {
     return false;
@@ -432,15 +434,11 @@ async function getUserPoints(usernameRaw) {
 
 async function deductUserPoints(username, amount) {
   try {
-    // normalize to lower-case for StreamElements
     const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
     const current = await getUserPoints(uname);
     const newTotal = Math.max(0, current - Math.abs(amount));
-    const cmd = `!setpoints ${uname} ${newTotal}`;
-    console.log("[IRC] →", cmd);
-    twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
-    await new Promise(r => setTimeout(r, 1500));
-    return newTotal;
+    const ok = await setUserPoints(uname, newTotal); // updates cache too
+    return ok ? newTotal : null;
   } catch { return null; }
 }
 
@@ -554,6 +552,7 @@ async function mergeUserDocs(userId) {
   // optional: await Gelly.deleteOne({ _id: opaque._id });
   return real;
 }
+
 // ===== Store =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
@@ -584,24 +583,13 @@ app.get("/v1/state/:userId", async (req, res) => {
     await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
-    sendLeaderboard(); // ensures first-time users appear immediately
+    sendLeaderboard();
     res.json({ success: true, state: gelly });
-
   } catch (e) {
     console.error("[/v1/state] error", e);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
-app.get("/v1/points/:username", async (req, res) => {
-  try {
-    const u = String(req.params.username || "").toLowerCase();  // ✅ force lowercase
-    res.json({ success: true, points: await getUserPoints(u) });
-  } catch {
-    res.status(500).json({ success: false, points: 0 });
-  }
-});
-
 
 // ---- Interact ----
 app.post("/v1/interact", async (req, res) => {
@@ -696,7 +684,6 @@ app.post("/v1/interact", async (req, res) => {
   }
 });
 
-
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
   try {
@@ -744,15 +731,14 @@ app.post("/v1/inventory/buy", async (req, res) => {
         const newBal = await deductUserPoints(usernameForPoints, cost);
         if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
       }
-  } else if (currency === "bits") {
-  if (!transactionId) {
-    return res.json({ success: false, message: "Missing Bits transaction id" });
-  }
-  const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
-  const valid = await verifyBitsTransaction(transactionId, verifyId);
-  if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
-}
-
+    } else if (currency === "bits") {
+      if (!transactionId) {
+        return res.json({ success: false, message: "Missing Bits transaction id" });
+      }
+      const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
+      const valid = await verifyBitsTransaction(transactionId, verifyId);
+      if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
+    }
 
     await Gelly.updateOne(
       { userId },
@@ -829,7 +815,6 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: "Not Found", method: req.method, path: req.originalUrl });
 });
 
-
 // Bits verification (Helix: Get Extension Transactions)
 async function verifyBitsTransaction(transactionId, userId) {
   try {
@@ -839,8 +824,8 @@ async function verifyBitsTransaction(transactionId, userId) {
     }
 
     const params = new URLSearchParams({
-      extension_id: EXT_CLIENT_ID,   // your Extension's client id
-      id: transactionId              // the id from onTransactionComplete
+      extension_id: EXT_CLIENT_ID,
+      id: transactionId
     });
 
     const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?${params.toString()}`, {
@@ -882,8 +867,7 @@ async function verifyBitsTransaction(transactionId, userId) {
   }
 }
 
-
-
-
 const PORT = process.env.PORT || 10000;
+const server = require("http").createServer(app); // ensure server is defined before listen
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+module.exports = app;
