@@ -11,7 +11,11 @@ const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
 const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
 const app = express();
 app.use(express.json());
+const cors = require('cors');
 
+app.use('/v1/points', require('./routes/points'));
+
+module.exports = app;
 // ===== CORS =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
