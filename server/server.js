@@ -42,7 +42,7 @@ app.use((req, res, next) => {
 // tiny req logger
 app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
 
-// mount points routes AFTER headers/logger
+// mount points routes
 app.use('/v1/points', require('./routes/points'));
 
 // ===== Twitch Bot =====
@@ -82,7 +82,6 @@ function weightedWinProb(aCare, bCare) {
 
 async function setUserPoints(username, newTotal) {
   try {
-    // normalize to lower-case for StreamElements
     const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
     const total = Math.max(0, Math.floor(newTotal));
     const cmd = `!setpoints ${uname} ${total}`;
@@ -120,18 +119,13 @@ async function getGellyByLogin(login) {
 
 // Apply +/- care via momentum so future updates remain consistent with your model.
 async function applyDuelCareDelta(gelly, pct /* e.g. +0.01 or -0.01 */) {
-  // first decay into "now", so we modify a fresh momentum
   const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, new Date()).momentum;
   const currentScore = Math.max(0, Number(gelly.careScore) || 0);
   const delta = Math.round(currentScore * pct);
-
   let newMomentum = decayed + delta;
   if (newMomentum < 0) newMomentum = 0;
-
   gelly.careMomentum = newMomentum;
   gelly.careMomentumUpdatedAt = new Date();
-
-  // recompute careScore = base + momentum
   await updateCareScore(gelly, null);
   await gelly.save();
   return gelly.careScore;
@@ -156,14 +150,13 @@ if (ENABLE_DUELS) {
     const low  = text.toLowerCase();
     const sender = parseLogin(tags.username);
 
-    const isDuelCmd     = low.startsWith(DUEL_CMD);         // "!gellyduel"
-    const isAcceptCmd   = low.startsWith(DUEL_ACCEPT_CMD);  // "!gellyaccept"
-    const isDeclineCmd  = low.startsWith(DUEL_DECLINE_CMD); // "!gellydecline" (optional)
+    const isDuelCmd     = low.startsWith(DUEL_CMD);
+    const isAcceptCmd   = low.startsWith(DUEL_ACCEPT_CMD);
+    const isDeclineCmd  = low.startsWith(DUEL_DECLINE_CMD);
 
     if (!isDuelCmd && !isAcceptCmd && !isDeclineCmd) return;
 
     try {
-      // --- !gellyduel @user 12345 ---
       if (isDuelCmd) {
         const rest = text.slice(DUEL_CMD.length).trim();
         const [rawTarget, betStr] = rest.split(/\s+/);
@@ -185,13 +178,11 @@ if (ENABLE_DUELS) {
           return;
         }
 
-        // Check both have enough beans
         const p1 = await getUserPoints(sender);
         const p2 = await getUserPoints(target);
         if (p1 < bet) { twitchClient.say(channel, `@${sender} you don’t have enough Jellybeans for a ${bet} bet.`); return; }
         if (p2 < bet) { twitchClient.say(channel, `@${sender} ${target} doesn’t have enough Jellybeans for ${bet}.`); return; }
 
-        // Lock them + register challenge
         activeByUser.add(sender);
         activeByUser.add(target);
         pendingDuels.set(target, { challengerLogin: sender, bet, createdAt: Date.now() });
@@ -204,11 +195,10 @@ if (ENABLE_DUELS) {
         return;
       }
 
-      // --- !gellyaccept [@challenger] ---
       if (isAcceptCmd) {
         const rest = text.slice(DUEL_ACCEPT_CMD.length).trim();
         const maybeChallenger = parseLogin(rest.split(/\s+/)[0] || "");
-        const challenge = pendingDuels.get(sender); // sender is the challenged user
+        const challenge = pendingDuels.get(sender);
 
         if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
         if (maybeChallenger && maybeChallenger !== challenge.challengerLogin) {
@@ -216,20 +206,17 @@ if (ENABLE_DUELS) {
           return;
         }
 
-        // Consume the challenge
         pendingDuels.delete(sender);
 
         const challenger = challenge.challengerLogin;
         const target = sender;
         const bet = challenge.bet;
 
-        // Refresh gellys & scores
         const g1 = await getGellyByLogin(challenger);
         const g2 = await getGellyByLogin(target);
         await updateCareScore(g1, null); await g1.save();
         await updateCareScore(g2, null); await g2.save();
 
-        // Re-check points
         const p1 = await getUserPoints(challenger);
         const p2 = await getUserPoints(target);
         if (p1 < bet || p2 < bet) {
@@ -238,7 +225,6 @@ if (ENABLE_DUELS) {
           return;
         }
 
-        // Weighted random winner
         const cs1 = Number(g1.careScore || 0);
         const cs2 = Number(g2.careScore || 0);
         const probChallenger = weightedWinProb(cs1, cs2);
@@ -246,17 +232,14 @@ if (ENABLE_DUELS) {
         const winner = roll < probChallenger ? challenger : target;
         const loser  = winner === challenger ? target : challenger;
 
-        // Settle beans
         await adjustUserPoints(winner, +bet);
         await adjustUserPoints(loser,  -bet);
 
-        // Settle care (±DUEL_CARE_PCT)
         const gW = winner === challenger ? g1 : g2;
         const gL = winner === challenger ? g2 : g1;
         await applyDuelCareDelta(gW, +DUEL_CARE_PCT);
         await applyDuelCareDelta(gL, -DUEL_CARE_PCT);
 
-        // Broadcast (if their userIds are known/connected)
         if (g1.userId) broadcastState(g1.userId, g1);
         if (g2.userId) broadcastState(g2.userId, g2);
         sendLeaderboard();
@@ -272,7 +255,6 @@ if (ENABLE_DUELS) {
         return;
       }
 
-      // --- !gellydecline (optional) ---
       if (isDeclineCmd) {
         const challenge = pendingDuels.get(sender);
         if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
@@ -285,7 +267,6 @@ if (ENABLE_DUELS) {
     } catch (e) {
       console.error("[DUEL] error:", e);
       twitchClient.say(channel, `Something broke while processing the duel command. Sorry!`);
-      // Last-ditch unlock in case of unexpected error
       activeByUser.delete(sender);
     }
   });
@@ -297,7 +278,7 @@ mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTop
   .catch(err => console.error("❌ Mongo Error:", err));
 
 // ===== WebSocket =====
-const server = require("http").createServer(app);
+const server = require("http").createServer(app); // <— define ONCE here
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
@@ -333,7 +314,7 @@ async function sendLeaderboard() {
   const gellys = await Gelly.find();
   for (const g of gellys) {
     if (typeof g.applyDecay === "function") { g.applyDecay(); }
-    await updateCareScore(g, null); // decay-only refresh
+    await updateCareScore(g, null);
     await g.save();
   }
 
@@ -342,7 +323,7 @@ async function sendLeaderboard() {
     .map(g => ({
       displayName: g.displayName || g.loginName || "Unknown",
       loginName: g.loginName || "unknown",
-      score: Math.max(0, Math.round(g.careScore || 0)), // use new score
+      score: Math.max(0, Math.round(g.careScore || 0)),
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
@@ -376,7 +357,6 @@ async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
 }
-// --- points cache (5s) to avoid SE thrash + rate limits
 const _pointsCache = new Map(); // key: login -> { points, ts }
 const POINTS_CACHE_MS = 5000;
 
@@ -389,7 +369,6 @@ async function getUserPoints(usernameRaw) {
     const username = _normLogin(usernameRaw);
     if (!username || username === "guest" || username === "unknown") return 0;
 
-    // cache hit?
     const hit = _pointsCache.get(username);
     const now = Date.now();
     if (hit && (now - hit.ts) < POINTS_CACHE_MS) return hit.points;
@@ -408,8 +387,6 @@ async function getUserPoints(usernameRaw) {
     );
 
     if (res.status === 404) {
-      // Normal for users who never earned points yet.
-      // Treat as 0, but cache briefly to keep UI stable.
       _pointsCache.set(username, { points: 0, ts: now });
       return 0;
     }
@@ -417,7 +394,6 @@ async function getUserPoints(usernameRaw) {
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       console.warn("[SE] points HTTP", res.status, text);
-      // don't cache errors—try again on next call
       return 0;
     }
 
@@ -437,18 +413,18 @@ async function deductUserPoints(username, amount) {
     const uname = String(username || "").trim().replace(/^@/, "").toLowerCase();
     const current = await getUserPoints(uname);
     const newTotal = Math.max(0, current - Math.abs(amount));
-    const ok = await setUserPoints(uname, newTotal); // updates cache too
+    const ok = await setUserPoints(uname, newTotal);
     return ok ? newTotal : null;
   } catch { return null; }
 }
 
 // ===== Care Score config =====
-const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 24); // faster decay to prevent runaway
+const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 24);
 const CARE_WEIGHTS = (() => {
   try { return JSON.parse(process.env.CARE_WEIGHTS_JSON); }
-  catch { return { feed: 6, play: 4, clean: 3 }; }  // smaller per-action gains
+  catch { return { feed: 6, play: 4, clean: 3 }; }
 })();
-const DUEL_CARE_PCT = Number(process.env.DUEL_CARE_PCT || 0.01); // 1% default
+const DUEL_CARE_PCT = Number(process.env.DUEL_CARE_PCT || 0.01);
 const MOMENTUM_CAPS = {
   egg:   Number(process.env.CAP_MOMENTUM_EGG   || 300),
   blob:  Number(process.env.CAP_MOMENTUM_BLOB  || 1000),
@@ -464,19 +440,12 @@ function decayMomentum(prevMomentum = 0, lastAt, now = new Date()) {
   return { momentum, at: now };
 }
 
-// Call this any time we show/modify state
 async function updateCareScore(gelly, eventType /* 'feed'|'play'|'clean'|null */) {
   const now = new Date();
-
-  // decay old momentum → add event points (if any)
   const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, now).momentum;
   const add = eventType ? (CARE_WEIGHTS[eventType] || 0) : 0;
   const momentum = decayed + add;
-
-  // base still tops out at 1500 on perfect stats
   const base = ((gelly.energy || 0) + (gelly.mood || 0) + (gelly.cleanliness || 0)) * 5;
-
-  // clamp momentum by stage to slow explosive growth
   const stage = (gelly.stage || "egg").toLowerCase();
   const cap = MOMENTUM_CAPS[stage] ?? 1000;
   const clampedMomentum = Math.min(momentum, cap);
@@ -499,7 +468,6 @@ function normalizeInventory(arr) {
     seen.add(key);
     out.push({ itemId: id, name: i.name || "", type: i.type || "accessory", equipped: !!i.equipped });
   }
-  // one equipped per type
   const typed = new Set();
   for (const it of out) {
     if (!it.equipped) continue;
@@ -542,14 +510,12 @@ async function mergeUserDocs(userId) {
     return opaque;
   }
 
-  // both exist → merge
   const have = new Set(normalizeInventory(real.inventory).map(i => i.itemId.toLowerCase()));
   for (const it of normalizeInventory(opaque.inventory)) {
     if (!have.has(it.itemId.toLowerCase())) real.inventory.push(it);
   }
   real.inventory = normalizeInventory(real.inventory);
   await real.save();
-  // optional: await Gelly.deleteOne({ _id: opaque._id });
   return real;
 }
 
@@ -578,7 +544,7 @@ app.get("/v1/state/:userId", async (req, res) => {
       gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
-      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); }
     }
     await updateCareScore(gelly, null);
     await gelly.save();
@@ -606,10 +572,9 @@ app.post("/v1/interact", async (req, res) => {
       gelly.loginName = "guest";
     } else {
       const td = await fetchTwitchUserData(userId);
-      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); }
     }
 
-    // Ensure cooldown map is usable (Map if schema wasn’t set as Map)
     if (!(gelly.lastActionTimes instanceof Map)) {
       const init = gelly.lastActionTimes && typeof gelly.lastActionTimes === "object"
         ? Object.entries(gelly.lastActionTimes)
@@ -671,7 +636,6 @@ app.post("/v1/interact", async (req, res) => {
 
     if (!ok) return res.json({ success: false, message: "Action failed" });
 
-    // Update care score (adds momentum for feed/play/clean)
     await updateCareScore(gelly, awardedEvent);
     await gelly.save();
 
@@ -711,7 +675,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
     if (!gelly.loginName) {
       if (!String(userId).startsWith("U")) {
         const td = await fetchTwitchUserData(userId);
-        if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); } // lower-case
+        if (td) { gelly.displayName = td.displayName; gelly.loginName = (td.loginName || "").toLowerCase(); }
       }
       if (!gelly.loginName) { gelly.displayName = "Guest Viewer"; gelly.loginName = "guest"; }
       await gelly.save();
@@ -849,7 +813,6 @@ async function verifyBitsTransaction(transactionId, userId) {
       return false;
     }
 
-    // Accept either shape: tx.product.type or tx.product_type
     const productType = tx.product?.type || tx.product_type;
     const okUser = String(tx.user_id) === String(userId);
     const okType = productType === "BITS_IN_EXTENSION";
@@ -868,6 +831,6 @@ async function verifyBitsTransaction(transactionId, userId) {
 }
 
 const PORT = process.env.PORT || 10000;
-const server = require("http").createServer(app); // ensure server is defined before listen
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+
 module.exports = app;
