@@ -293,25 +293,70 @@ const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
+// decode numeric Twitch user id from a JWT token string
+function decodeUserIdFromTokenParam(token) {
+  try { return jwt.decode(token)?.user_id || null; } catch { return null; }
+}
+
 wss.on("connection", (ws, req) => {
-  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
-  const userId = searchParams.get("user");
-  if (userId) {
-    clients.set(userId, ws);
-    console.log(`🔌 WebSocket connected for user: ${userId}`);
-    sendLeaderboard().catch(console.error);
+  const url = new URL(req.url, `http://${req.headers.host}`);
+  const rawUser = url.searchParams.get("user") || "";
+  const token   = url.searchParams.get("token") || "";
+  const numeric = decodeUserIdFromTokenParam(token);
+
+  const keys = new Set([rawUser]);
+  if (numeric) {
+    keys.add(String(numeric));
+    keys.add(`U${numeric}`);
   }
+  for (const k of keys) clients.set(k, ws);
+
+  console.log(`🔌 WebSocket connected as [${[...keys].join(", ")}]`);
+
+  // heartbeat to reduce idle disconnects
+  ws.isAlive = true;
+  ws.on("pong", () => { ws.isAlive = true; });
+
+  sendLeaderboard().catch(console.error);
+
   ws.on("close", () => {
-    if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
+    for (const k of keys) if (clients.get(k) === ws) clients.delete(k);
+    console.log(`❌ WebSocket disconnected [${[...keys].join(", ")}]`);
   });
 });
 
+// periodic ping
+setInterval(() => {
+  wss.clients.forEach((ws) => {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  });
+}, 30000);
+
 function broadcastState(userId, gelly) {
-  const ws = clients.get(userId) || clients.get(`U${userId}`) || clients.get(String(userId).replace(/^U/, ""));
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
+  const want = String(userId);
+  const payload = JSON.stringify({ type: "update", state: gelly });
+
+  // First try the most direct mappings
+  const direct =
+    clients.get(want) ||
+    clients.get(`U${want}`) ||
+    clients.get(want.replace(/^U/, ""));
+  if (direct && direct.readyState === WebSocket.OPEN) {
+    direct.send(payload);
+    return;
+  }
+
+  // Fallback: send to any socket whose key matches ignoring the leading "U"
+  for (const [key, ws] of clients) {
+    if (ws.readyState !== WebSocket.OPEN) continue;
+    if (key.replace(/^U/, "") === want.replace(/^U/, "")) {
+      ws.send(payload);
+    }
   }
 }
+
 function getRealTwitchId(authHeader) {
   if (!authHeader) return null;
   try { return jwt.decode(authHeader.split(" ")[1])?.user_id || null; } catch { return null; }
@@ -573,11 +618,11 @@ app.get("/v1/state/:userId", async (req, res) => {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
-await updateCareScore(gelly, null);
+    await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
-sendLeaderboard(); // ensures first-time users appear immediately
-res.json({ success: true, state: gelly });
+    sendLeaderboard(); // ensures first-time users appear immediately
+    res.json({ success: true, state: gelly });
 
   } catch (e) {
     console.error("[/v1/state] error", e);
@@ -736,15 +781,16 @@ app.post("/v1/inventory/buy", async (req, res) => {
         const newBal = await deductUserPoints(usernameForPoints, cost);
         if (newBal === null) return res.json({ success: false, message: "Point deduction failed" });
       }
-  } else if (currency === "bits") {
-  if (!transactionId) {
-    return res.json({ success: false, message: "Missing Bits transaction id" });
-  }
-  const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
-  const valid = await verifyBitsTransaction(transactionId, verifyId);
-  if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
-}
-
+    } else if (currency === "bits") {
+      if (!transactionId) {
+        return res.json({ success: false, message: "Missing Bits transaction id" });
+      }
+      const verifyId = String(userId).startsWith("U") ? String(userId).slice(1) : String(userId);
+      const valid = await verifyBitsTransaction(transactionId, verifyId);
+      if (!valid) return res.json({ success: false, message: "Bits payment not verified" });
+    } else {
+      return res.json({ success: false, message: "Invalid currency type" });
+    }
 
     await Gelly.updateOne(
       { userId },
@@ -791,6 +837,7 @@ app.post("/v1/inventory/equip", async (req, res) => {
       return res.json({ success: false, message: "Item not found" });
     }
 
+    // Only one equipped per type
     if (equipped) {
       gelly.inventory.forEach(i => {
         if (i.type === item.type && norm(i.itemId) !== norm(item.itemId)) i.equipped = false;
@@ -873,9 +920,6 @@ async function verifyBitsTransaction(transactionId, userId) {
     return false;
   }
 }
-
-
-
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
