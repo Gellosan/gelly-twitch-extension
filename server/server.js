@@ -82,6 +82,37 @@ WebSocketServer.on("connection", (ws, req) => {
     }
   });
 });
+function heartbeat() { this.isAlive = true; }
+
+WebSocketServer.on("connection", (ws, req) => {
+  ws.isAlive = true;
+  ws.on("pong", heartbeat);
+
+  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+  const userId = searchParams.get("user");
+  if (userId) {
+    clients.set(userId, ws);
+    console.log(`🔌 WebSocket connected for user: ${userId}`);
+    sendLeaderboard().catch(console.error);
+  }
+  ws.on("close", () => {
+    if (userId) {
+      clients.delete(userId);
+      console.log(`❌ WebSocket disconnected for user: ${userId}`);
+    }
+  });
+});
+
+// ping all clients every 30s
+const wsHeartbeat = setInterval(() => {
+  WebSocketServer.clients.forEach((ws) => {
+    if (ws.isAlive === false) return ws.terminate();
+    ws.isAlive = false;
+    try { ws.ping(); } catch {}
+  });
+}, 30000);
+
+WebSocketServer.on("close", () => clearInterval(wsHeartbeat));
 
 // Broadcast to both the provided id and its opaque/real counterpart.
 // (Why: the panel connects with opaque U… even after identity is shared.)
