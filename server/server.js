@@ -289,23 +289,7 @@ app.get("/v1/state/:userId", async (req, res) => {
         gelly.loginName = twitchData.loginName;
       }
     }
-if (String(userId).startsWith("U")) {
-      gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
-    } else {
-      const td = await fetchTwitchUserData(userId);
-      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
-    }
-await updateCareScore(gelly, null);
-    await gelly.save();
-    broadcastState(userId, gelly);
-sendLeaderboard(); // ensures first-time users appear immediately
-res.json({ success: true, state: gelly });
 
-  } catch (e) {
-    console.error("[/v1/state] error", e);
-    res.status(500).json({ success: false, message: "Server error" });
-  }
-});
     await gelly.save();
 
     // Broadcast to whoever is connected under this id and its counterpart
