@@ -6,7 +6,9 @@ require("dotenv").config();
 const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
-
+const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
+const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
 // ----- App -----
 const app = express();
 app.use(express.json());
