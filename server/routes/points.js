@@ -84,8 +84,9 @@ async function getPointsByLogin(login) {
 // GET /v1/points/by-user-id/:userId  (JWT → real id → login → SE points)
 router.get('/by-user-id/:userId', async (req, res) => {
   try {
-    const real = tokenUserId(req) || stripU(req.params.userId);
-    if (!real) return res.json({ success: true, points: 0 });
+    const real = tokenUserId(req) || (/^\d+$/.test(req.params.userId) ? req.params.userId : null);
+if (!real) return res.json({ success: true, points: 0 });
+
 
     // Try DB (real then opaque), then Helix
     let doc = await Gelly.findOne({ userId: real }).lean();
@@ -116,3 +117,4 @@ router.get('/:username', async (req, res) => {
 });
 
 module.exports = router;
+
