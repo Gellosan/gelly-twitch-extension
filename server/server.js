@@ -83,10 +83,19 @@ WebSocketServer.on("connection", (ws, req) => {
   });
 });
 
+// Broadcast to both the provided id and its opaque/real counterpart.
+// (Why: the panel connects with opaque U… even after identity is shared.)
 function broadcastState(userId, gelly) {
-  const ws = clients.get(userId);
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: "update", state: gelly }));
+  const id = String(userId || "");
+  const keys = new Set([id]);
+  if (id) {
+    if (id.startsWith("U")) keys.add(id.slice(1));
+    else keys.add(`U${id}`);
+  }
+  const payload = JSON.stringify({ type: "update", state: gelly });
+  for (const k of keys) {
+    const ws = clients.get(k);
+    if (ws && ws.readyState === WebSocket.OPEN) ws.send(payload);
   }
 }
 
@@ -134,12 +143,13 @@ async function fetchTwitchUserData(userId) {
       headers: {
         "Client-ID": TWITCH_CLIENT_ID,
         Authorization: `Bearer ${TWITCH_APP_ACCESS_TOKEN}`,
+        Accept: "application/json",
       },
     });
     if (!res.ok) return null;
     const data = await res.json();
     const user = data?.data?.[0];
-    return user ? { displayName: user.display_name, loginName: user.login } : null;
+    return user ? { displayName: user.display_name, loginName: String(user.login || "").toLowerCase() } : null;
   } catch {
     return null;
   }
@@ -177,17 +187,27 @@ const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 
 async function getUserPoints(username) {
   try {
-    if (!username || username === "guest" || username === "unknown") return 0;
-    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
+    const login = String(username || "").trim().toLowerCase();
+    if (!login || login === "guest" || login === "unknown") return 0;
+    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
     const res = await fetchWithTimeout(
-      (signal) => fetch(url, { headers: { Authorization: `Bearer ${STREAM_ELEMENTS_JWT}` }, signal }),
+      (signal) =>
+        fetch(url, {
+          headers: {
+            Authorization: `Bearer ${STREAM_ELEMENTS_JWT}`,
+            Accept: "application/json",
+          },
+          signal,
+        }),
       2500
     );
+
+    if (res.status === 404) return 0; // user has no points yet
     if (!res.ok) {
-      console.error("[SE] getUserPoints failed:", await res.text());
+      console.error("[SE] getUserPoints failed:", res.status, await res.text().catch(() => ""));
       return 0;
     }
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     return typeof data?.points === "number" ? data.points : 0;
   } catch (err) {
     console.error("[SE] getUserPoints error:", err?.message || err);
@@ -197,9 +217,10 @@ async function getUserPoints(username) {
 
 async function deductUserPoints(username, amount) {
   try {
-    const current = await getUserPoints(username);
+    const login = String(username || "").trim().toLowerCase();
+    const current = await getUserPoints(login);
     const newTotal = Math.max(0, current - Math.abs(amount));
-    const cmd = `!setpoints ${username} ${newTotal}`;
+    const cmd = `!setpoints ${login} ${newTotal}`;
     console.log("[IRC] →", cmd);
     twitchClient.say(process.env.TWITCH_CHANNEL_NAME, cmd);
     await new Promise((r) => setTimeout(r, 1500));
@@ -211,6 +232,46 @@ async function deductUserPoints(username, amount) {
 }
 
 // ===== API Routes =====
+
+// NEW: initial state loader used by the panel
+app.get("/v1/state/:userId", async (req, res) => {
+  try {
+    // Use the supplied id as the WS key, but enrich with real Twitch profile if available
+    const supplied = String(req.params.userId || "");
+    const real = getRealTwitchId(req.headers.authorization) || null;
+
+    // Persist a doc for the supplied id (opaque or real) so the panel always has something to show
+    let gelly = await Gelly.findOne({ userId: supplied });
+    if (!gelly) gelly = new Gelly({ userId: supplied, points: 0, inventory: [] });
+
+    if (typeof gelly.applyDecay === "function") gelly.applyDecay();
+
+    // Fill in profile details:
+    if (!supplied || supplied.startsWith("U")) {
+      // guest/opaque
+      gelly.displayName = "Guest Viewer";
+      gelly.loginName = "guest";
+    } else {
+      const twitchData = await fetchTwitchUserData(supplied);
+      if (twitchData) {
+        gelly.displayName = twitchData.displayName;
+        gelly.loginName = twitchData.loginName;
+      }
+    }
+
+    await gelly.save();
+
+    // Broadcast to whoever is connected under this id and its counterpart
+    broadcastState(supplied, gelly);
+    sendLeaderboard().catch(() => {});
+
+    return res.json({ success: true, state: gelly });
+  } catch (e) {
+    console.error("[/v1/state] error:", e);
+    return res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+
 app.get("/v1/points/by-user-id/:userId", async (req, res) => {
   try {
     // Prefer the real numeric Twitch ID from the extension JWT (only present if the viewer shared identity)
@@ -237,7 +298,8 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
       const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
         headers: {
           "Client-ID": process.env.TWITCH_CLIENT_ID,
-          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
+          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`,
+          Accept: "application/json",
         }
       });
       if (uRes.ok) {
@@ -264,7 +326,6 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
   }
 });
 
-
 app.get("/v1/points/:username", async (req, res) => {
   try {
     const points = await getUserPoints(req.params.username);
@@ -279,7 +340,7 @@ app.post("/v1/interact", async (req, res) => {
     let { user, action } = req.body;
     if (req.headers.authorization) {
       const realId = getRealTwitchId(req.headers.authorization);
-      if (realId) user = realId;
+      if (realId) user = realId; // prefer real id if available
     }
     if (!user) return res.json({ success: false, message: "Missing user ID" });
 
@@ -288,7 +349,7 @@ app.post("/v1/interact", async (req, res) => {
 
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    if (!user || user.startsWith("U")) {
+    if (!user || String(user).startsWith("U")) {
       gelly.displayName = "Guest Viewer";
       gelly.loginName = "guest";
     } else {
@@ -299,12 +360,20 @@ app.post("/v1/interact", async (req, res) => {
       }
     }
 
+    // Ensure cooldown map exists and behaves like a Map
+    if (!(gelly.lastActionTimes instanceof Map)) {
+      const init = gelly.lastActionTimes && typeof gelly.lastActionTimes === "object"
+        ? Object.entries(gelly.lastActionTimes)
+        : [];
+      gelly.lastActionTimes = new Map(init);
+    }
+
     await gelly.save();
     const usernameForPoints = gelly.loginName;
     let userPoints = await getUserPoints(usernameForPoints);
 
     const ACTION_COOLDOWNS = { feed: 300000, clean: 240000, play: 180000, color: 60000 };
-    const cooldownKey = action.startsWith("color:") ? "color" : action;
+    const cooldownKey = String(action || "").startsWith("color:") ? "color" : action;
     const cooldown = ACTION_COOLDOWNS[cooldownKey] || 60000;
     const now = new Date();
 
@@ -326,13 +395,13 @@ app.post("/v1/interact", async (req, res) => {
       const result = gelly.updateStats("feed");
       if (!result.success) return res.json({ success: false, message: result.message });
       actionSucceeded = true;
-    } else if (action.startsWith("color:")) {
+    } else if (String(action).startsWith("color:")) {
       const cost = 50000;
       if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
       const newBal = await deductUserPoints(usernameForPoints, cost);
       if (newBal === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
       userPoints = newBal;
-      gelly.color = action.split(":")[1] || "blue";
+      gelly.color = String(action).split(":")[1] || "blue";
       actionSucceeded = true;
     } else if (action === "play") {
       const result = gelly.updateStats("play");
@@ -357,7 +426,7 @@ app.post("/v1/interact", async (req, res) => {
     if (actionSucceeded) {
       await gelly.save();
       broadcastState(user, gelly);
-      sendLeaderboard();
+      sendLeaderboard().catch(() => {});
       return res.json({ success: true, newBalance: userPoints, state: gelly });
     }
   } catch (err) {
@@ -533,6 +602,7 @@ async function verifyBitsTransaction(transactionId, userId) {
       headers: {
         "Client-ID": process.env.TWITCH_CLIENT_ID,
         Authorization: `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`,
+        Accept: "application/json",
       },
     });
     if (!res.ok) {
@@ -541,7 +611,7 @@ async function verifyBitsTransaction(transactionId, userId) {
     }
     const data = await res.json();
     const tx = data.data && data.data[0];
-    return tx && tx.user_id === userId && tx.product_type === "BITS_IN_EXTENSION";
+    return tx && String(tx.user_id) === String(userId) && (tx.product?.type || tx.product_type) === "BITS_IN_EXTENSION";
   } catch (err) {
     console.error("verifyBitsTransaction error:", err);
     return false;
