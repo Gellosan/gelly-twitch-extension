@@ -114,19 +114,23 @@ const wsHeartbeat = setInterval(() => {
 
 WebSocketServer.on("close", () => clearInterval(wsHeartbeat));
 
-// Broadcast to both the provided id and its opaque/real counterpart.
-// (Why: the panel connects with opaque U… even after identity is shared.)
+function decodeExtUserId(authHeader) {
+  if (!authHeader) return null;
+  try {
+    const tok = authHeader.split(" ")[1] || "";
+    return jwt.decode(tok)?.user_id || null; // may be numeric OR opaque "U..."
+  } catch { return null; }
+}
+
+// replace your broadcastState with this tolerant version (optional but handy)
 function broadcastState(userId, gelly) {
-  const id = String(userId || "");
-  const keys = new Set([id]);
-  if (id) {
-    if (id.startsWith("U")) keys.add(id.slice(1));
-    else keys.add(`U${id}`);
-  }
-  const payload = JSON.stringify({ type: "update", state: gelly });
-  for (const k of keys) {
-    const ws = clients.get(k);
-    if (ws && ws.readyState === WebSocket.OPEN) ws.send(payload);
+  const n = String(userId).replace(/^U/, "");
+  const candidates = new Set([String(userId), `U${n}`, n]);
+  for (const id of candidates) {
+    const ws = clients.get(id);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "update", state: gelly }));
+    }
   }
 }
 
@@ -267,33 +271,44 @@ async function deductUserPoints(username, amount) {
 // NEW: initial state loader used by the panel
 app.get("/v1/state/:userId", async (req, res) => {
   try {
-    // Use the supplied id as the WS key, but enrich with real Twitch profile if available
-    const supplied = String(req.params.userId || "");
-    const real = getRealTwitchId(req.headers.authorization) || null;
-    const userId = canonicalUserId(req.headers.authorization, req.params.userId);
-    // Persist a doc for the supplied id (opaque or real) so the panel always has something to show
-    let gelly = await Gelly.findOne({ userId: supplied });
-    if (!gelly) gelly = new Gelly({ userId: supplied, points: 0, inventory: [] });
+    // Prefer real id from JWT if present; else use the path param (may be opaque)
+    const fromJwt = decodeExtUserId(req.headers.authorization);
+    let userId = fromJwt || String(req.params.userId || "");
 
+    if (!userId) return res.status(400).json({ success: false, message: "Missing user id" });
+
+    // Load or create the doc
+    let gelly = await Gelly.findOne({ userId }) || new Gelly({ userId, points: 0, inventory: [] });
+
+    // Ensure cooldown map is a Map
+    if (!(gelly.lastActionTimes instanceof Map)) {
+      const init = gelly.lastActionTimes && typeof gelly.lastActionTimes === "object"
+        ? Object.entries(gelly.lastActionTimes)
+        : [];
+      gelly.lastActionTimes = new Map(init);
+    }
+
+    // Apply decay prior to showing
     if (typeof gelly.applyDecay === "function") gelly.applyDecay();
 
-    // Fill in profile details:
-    if (!supplied || supplied.startsWith("U")) {
-      // guest/opaque
+    // Derive display/login:
+    if (String(userId).startsWith("U")) {
+      // Opaque id → treat as guest unless you have out-of-band link
       gelly.displayName = "Guest Viewer";
-      gelly.loginName = "guest";
+      gelly.loginName   = "guest";
     } else {
-      const twitchData = await fetchTwitchUserData(supplied);
-      if (twitchData) {
-        gelly.displayName = twitchData.displayName;
-        gelly.loginName = twitchData.loginName;
+      // Real numeric id → query Helix for display/login
+      const t = await fetchTwitchUserData(userId);
+      if (t) {
+        gelly.displayName = t.displayName;
+        gelly.loginName   = (t.loginName || "").toLowerCase();
       }
     }
 
     await gelly.save();
 
-    // Broadcast to whoever is connected under this id and its counterpart
-    broadcastState(supplied, gelly);
+    // Push state to any open socket(s)
+    broadcastState(userId, gelly);
     sendLeaderboard().catch(() => {});
 
     return res.json({ success: true, state: gelly });
