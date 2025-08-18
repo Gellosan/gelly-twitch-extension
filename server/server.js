@@ -270,7 +270,7 @@ app.get("/v1/state/:userId", async (req, res) => {
     // Use the supplied id as the WS key, but enrich with real Twitch profile if available
     const supplied = String(req.params.userId || "");
     const real = getRealTwitchId(req.headers.authorization) || null;
-
+    const userId = canonicalUserId(req.headers.authorization, req.params.userId);
     // Persist a doc for the supplied id (opaque or real) so the panel always has something to show
     let gelly = await Gelly.findOne({ userId: supplied });
     if (!gelly) gelly = new Gelly({ userId: supplied, points: 0, inventory: [] });
@@ -289,7 +289,23 @@ app.get("/v1/state/:userId", async (req, res) => {
         gelly.loginName = twitchData.loginName;
       }
     }
+if (String(userId).startsWith("U")) {
+      gelly.displayName = "Guest Viewer"; gelly.loginName = "guest";
+    } else {
+      const td = await fetchTwitchUserData(userId);
+      if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
+    }
+await updateCareScore(gelly, null);
+    await gelly.save();
+    broadcastState(userId, gelly);
+sendLeaderboard(); // ensures first-time users appear immediately
+res.json({ success: true, state: gelly });
 
+  } catch (e) {
+    console.error("[/v1/state] error", e);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+});
     await gelly.save();
 
     // Broadcast to whoever is connected under this id and its counterpart
