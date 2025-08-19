@@ -428,33 +428,57 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
       const candidate = String(req.params.userId || "");
       if (/^\d+$/.test(candidate)) realId = candidate;
     }
-    if (!realId) return res.json({ success: true, points: 0 });
 
-    // Try DB first, then Helix to map id -> login
+    if (!realId) {
+      // No resolvable identity → viewer hasn’t shared. Return 0 but *don’t* error.
+      return res.json({ success: true, points: 0, note: "no-user-id" });
+    }
+
+    // 1) Try DB mapping first (fast & works even if Helix is hiccuping)
     let login = null;
+    let display = null;
     const doc = await Gelly.findOne({ userId: realId }).lean();
-    if (doc?.loginName) login = String(doc.loginName).toLowerCase();
+    if (doc) {
+      if (doc.loginName) login = String(doc.loginName).toLowerCase();
+      if (doc.displayName) display = String(doc.displayName).toLowerCase();
+    }
+
+    // 2) If missing, try Helix map id → login
     if (!login) {
-      const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
-        headers: {
-          "Client-ID": process.env.TWITCH_CLIENT_ID,
-          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
+      try {
+        const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
+          headers: {
+            "Client-ID": process.env.TWITCH_CLIENT_ID,
+            "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
+          }
+        });
+        if (uRes.ok) {
+          const j = await uRes.json().catch(() => ({}));
+          login = (j?.data?.[0]?.login || "").toLowerCase();
+        } else {
+          console.warn("[points/by-user-id] Helix users HTTP", uRes.status, await uRes.text().catch(() => ""));
         }
-      });
-      if (uRes.ok) {
-        const j = await uRes.json().catch(() => ({}));
-        login = (j?.data?.[0]?.login || "").toLowerCase();
+      } catch (e) {
+        console.warn("[points/by-user-id] Helix users error", e?.message || e);
       }
     }
 
-    if (!login) return res.json({ success: true, points: 0 });
+    // 3) If still nothing, try any cached displayName from DB (rare, but SE sometimes accepts it)
+    const loginCandidate = login || display;
+    if (!loginCandidate) return res.json({ success: true, points: 0, note: "no-login" });
 
-    const url = `${STREAM_ELEMENTS_API}/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
+    // 4) StreamElements lookup by login
+    const url = `https://api.streamelements.com/kappa/v2/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(loginCandidate)}`;
     const se = await fetch(url, {
       headers: { "Authorization": `Bearer ${process.env.STREAMELEMENTS_JWT}`, "Accept": "application/json" }
     });
-    if (se.status === 404) return res.json({ success: true, points: 0 });
-    if (!se.ok) return res.json({ success: true, points: 0 });
+
+    if (se.status === 404) return res.json({ success: true, points: 0 }); // no points yet is normal
+    if (!se.ok) {
+      console.warn("[points/by-user-id] SE HTTP", se.status, await se.text().catch(() => ""));
+      return res.json({ success: true, points: 0 });
+    }
+
     const data = await se.json().catch(() => ({}));
     const points = typeof data?.points === "number" ? data.points : 0;
     return res.json({ success: true, points });
@@ -463,6 +487,7 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     return res.status(500).json({ success: false, points: 0 });
   }
 });
+
 
 // ---- Interact ----
 app.post("/v1/interact", async (req, res) => {
