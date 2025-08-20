@@ -7,8 +7,11 @@ const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
+
 const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
 const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
+
+// ----- App -----
 const app = express();
 app.use(express.json());
 
@@ -59,6 +62,7 @@ const DUEL_MIN_BET      = Number(process.env.DUEL_MIN_BET || 1000);
 const DUEL_MAX_BET      = Number(process.env.DUEL_MAX_BET || 500000);
 const DUEL_TTL_MS       = Number(process.env.DUEL_TTL_MS || 60_000);
 const DUEL_ALPHA        = Number(process.env.DUEL_ALPHA || 1.25);
+const DUEL_CARE_PCT     = Number(process.env.DUEL_CARE_PCT || 0.01); // 1%
 
 // pending challenges keyed by challenged login
 const pendingDuels = new Map(); // targetLogin -> { challengerLogin, bet, createdAt }
@@ -110,179 +114,6 @@ async function getGellyByLogin(login) {
   return g;
 }
 
-// Apply +/- care via momentum so future updates remain consistent with your model.
-async function applyDuelCareDelta(gelly, pct /* e.g. +0.01 or -0.01 */) {
-  // first decay into "now", so we modify a fresh momentum
-  const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, new Date()).momentum;
-  const currentScore = Math.max(0, Number(gelly.careScore) || 0);
-  const delta = Math.round(currentScore * pct);
-
-  let newMomentum = decayed + delta;
-  if (newMomentum < 0) newMomentum = 0;
-
-  gelly.careMomentum = newMomentum;
-  gelly.careMomentumUpdatedAt = new Date();
-
-  // recompute careScore = base + momentum
-  await updateCareScore(gelly, null);
-  await gelly.save();
-  return gelly.careScore;
-}
-
-function clearExpiredChallenges() {
-  const now = Date.now();
-  for (const [target, c] of pendingDuels.entries()) {
-    if (now - c.createdAt > DUEL_TTL_MS) {
-      pendingDuels.delete(target);
-      activeByUser.delete(c.challengerLogin);
-      activeByUser.delete(target);
-    }
-  }
-}
-setInterval(clearExpiredChallenges, 5000);
-
-if (ENABLE_DUELS) {
-  twitchClient.on("message", async (channel, tags, msg, self) => {
-    if (self) return;
-    const text = (msg || "").trim();
-    const low  = text.toLowerCase();
-    const sender = parseLogin(tags.username);
-
-    const isDuelCmd     = low.startsWith(DUEL_CMD);         // "!gellyduel"
-    const isAcceptCmd   = low.startsWith(DUEL_ACCEPT_CMD);  // "!gellyaccept"
-    const isDeclineCmd  = low.startsWith(DUEL_DECLINE_CMD); // "!gellydecline" (optional)
-
-    if (!isDuelCmd && !isAcceptCmd && !isDeclineCmd) return;
-
-    try {
-      // --- !gellyduel @user 12345 ---
-      if (isDuelCmd) {
-        const rest = text.slice(DUEL_CMD.length).trim();
-        const [rawTarget, betStr] = rest.split(/\s+/);
-        const target = parseLogin(rawTarget);
-        const betNum = parseInt(betStr, 10);
-        const bet = Math.max(DUEL_MIN_BET, Math.min(DUEL_MAX_BET, isFinite(betNum) ? betNum : 0));
-
-        if (!target) {
-          twitchClient.say(channel, `@${sender} usage: ${DUEL_CMD} @username <bet>. Min ${DUEL_MIN_BET}, max ${DUEL_MAX_BET}.`);
-          return;
-        }
-        if (sender === target) { twitchClient.say(channel, `@${sender} you can’t duel yourself 😅`); return; }
-        if (activeByUser.has(sender) || activeByUser.has(target)) {
-          twitchClient.say(channel, `@${sender} someone is already in a duel. Try again in a moment.`);
-          return;
-        }
-        if (!bet || bet < DUEL_MIN_BET) {
-          twitchClient.say(channel, `@${sender} minimum bet is ${DUEL_MIN_BET}.`);
-          return;
-        }
-
-        // Check both have enough beans
-        const p1 = await getUserPoints(sender);
-        const p2 = await getUserPoints(target);
-        if (p1 < bet) { twitchClient.say(channel, `@${sender} you don’t have enough Jellybeans for a ${bet} bet.`); return; }
-        if (p2 < bet) { twitchClient.say(channel, `@${sender} ${target} doesn’t have enough Jellybeans for ${bet}.`); return; }
-
-        // Lock them + register challenge
-        activeByUser.add(sender);
-        activeByUser.add(target);
-        pendingDuels.set(target, { challengerLogin: sender, bet, createdAt: Date.now() });
-
-        twitchClient.say(
-          channel,
-          `@${target}, @${sender} has challenged you to a GELLY DUEL for ${bet} 🫘! ` +
-          `Type ${DUEL_ACCEPT_CMD} to fight (${Math.round(DUEL_TTL_MS/1000)}s).`
-        );
-        return;
-      }
-
-      // --- !gellyaccept [@challenger] ---
-      if (isAcceptCmd) {
-        const rest = text.slice(DUEL_ACCEPT_CMD.length).trim();
-        const maybeChallenger = parseLogin(rest.split(/\s+/)[0] || "");
-        const challenge = pendingDuels.get(sender); // sender is the challenged user
-
-        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
-        if (maybeChallenger && maybeChallenger !== challenge.challengerLogin) {
-          twitchClient.say(channel, `@${sender} your pending challenger is @${challenge.challengerLogin}, not @${maybeChallenger}.`);
-          return;
-        }
-
-        // Consume the challenge
-        pendingDuels.delete(sender);
-
-        const challenger = challenge.challengerLogin;
-        const target = sender;
-        const bet = challenge.bet;
-
-        // Refresh gellys & scores
-        const g1 = await getGellyByLogin(challenger);
-        const g2 = await getGellyByLogin(target);
-        await updateCareScore(g1, null); await g1.save();
-        await updateCareScore(g2, null); await g2.save();
-
-        // Re-check points
-        const p1 = await getUserPoints(challenger);
-        const p2 = await getUserPoints(target);
-        if (p1 < bet || p2 < bet) {
-          twitchClient.say(channel, `Duel canceled: one of you no longer has ${bet} Jellybeans.`);
-          activeByUser.delete(challenger); activeByUser.delete(target);
-          return;
-        }
-
-        // Weighted random winner
-        const cs1 = Number(g1.careScore || 0);
-        const cs2 = Number(g2.careScore || 0);
-        const probChallenger = weightedWinProb(cs1, cs2);
-        const roll = Math.random();
-        const winner = roll < probChallenger ? challenger : target;
-        const loser  = winner === challenger ? target : challenger;
-
-        // Settle beans
-        await adjustUserPoints(winner, +bet);
-        await adjustUserPoints(loser,  -bet);
-
-        // Settle care (±DUEL_CARE_PCT)
-        const gW = winner === challenger ? g1 : g2;
-        const gL = winner === challenger ? g2 : g1;
-        await applyDuelCareDelta(gW, +DUEL_CARE_PCT);
-        await applyDuelCareDelta(gL, -DUEL_CARE_PCT);
-
-        // Broadcast (if their userIds are known/connected)
-        if (g1.userId) broadcastState(g1.userId, g1);
-        if (g2.userId) broadcastState(g2.userId, g2);
-        sendLeaderboard();
-
-        const pretty = (n) => Math.round(n).toLocaleString();
-        twitchClient.say(
-          channel,
-          `⚔️ Gelly Duel: @${challenger} (care ${pretty(cs1)}) vs @${target} (care ${pretty(cs2)}). ` +
-          `Winner: @${winner}! +${bet}🫘 & +${Math.round(DUEL_CARE_PCT*100)}% care. @${loser} loses ${bet}🫘 & ${Math.round(DUEL_CARE_PCT*100)}% care.`
-        );
-
-        activeByUser.delete(challenger); activeByUser.delete(target);
-        return;
-      }
-
-      // --- !gellydecline (optional) ---
-      if (isDeclineCmd) {
-        const challenge = pendingDuels.get(sender);
-        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
-        pendingDuels.delete(sender);
-        activeByUser.delete(sender);
-        activeByUser.delete(challenge.challengerLogin);
-        twitchClient.say(channel, `@${sender} declined the duel. All good!`);
-        return;
-      }
-    } catch (e) {
-      console.error("[DUEL] error:", e);
-      twitchClient.say(channel, `Something broke while processing the duel command. Sorry!`);
-      // Last-ditch unlock in case of unexpected error
-      activeByUser.delete(sender);
-    }
-  });
-}
-
 // ===== MongoDB =====
 mongoose.connect(process.env.MONGODB_URI, { useNewUrlParser: true, useUnifiedTopology: true })
   .then(() => console.log("✅ MongoDB connected"))
@@ -293,67 +124,26 @@ const server = require("http").createServer(app);
 const wss = new WebSocket.Server({ server });
 const clients = new Map();
 
-// decode numeric Twitch user id from a JWT token string
-function decodeUserIdFromTokenParam(token) {
-  try { return jwt.decode(token)?.user_id || null; } catch { return null; }
-}
-
 wss.on("connection", (ws, req) => {
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  const rawUser = url.searchParams.get("user") || "";
-  const token   = url.searchParams.get("token") || "";
-  const numeric = decodeUserIdFromTokenParam(token);
-
-  const keys = new Set([rawUser]);
-  if (numeric) {
-    keys.add(String(numeric));
-    keys.add(`U${numeric}`);
+  const searchParams = new URL(req.url, `http://${req.headers.host}`).searchParams;
+  const userId = searchParams.get("user");
+  if (userId) {
+    clients.set(userId, ws);
+    console.log(`🔌 WebSocket connected for user: ${userId}`);
+    sendLeaderboard().catch(console.error);
   }
-  for (const k of keys) clients.set(k, ws);
-
-  console.log(`🔌 WebSocket connected as [${[...keys].join(", ")}]`);
-
-  // heartbeat to reduce idle disconnects
-  ws.isAlive = true;
-  ws.on("pong", () => { ws.isAlive = true; });
-
-  sendLeaderboard().catch(console.error);
-
   ws.on("close", () => {
-    for (const k of keys) if (clients.get(k) === ws) clients.delete(k);
-    console.log(`❌ WebSocket disconnected [${[...keys].join(", ")}]`);
+    if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
   });
 });
 
-// periodic ping
-setInterval(() => {
-  wss.clients.forEach((ws) => {
-    if (!ws.isAlive) return ws.terminate();
-    ws.isAlive = false;
-    try { ws.ping(); } catch {}
-  });
-}, 30000);
-
 function broadcastState(userId, gelly) {
-  const want = String(userId);
-  const payload = JSON.stringify({ type: "update", state: gelly });
-
-  // First try the most direct mappings
-  const direct =
-    clients.get(want) ||
-    clients.get(`U${want}`) ||
-    clients.get(want.replace(/^U/, ""));
-  if (direct && direct.readyState === WebSocket.OPEN) {
-    direct.send(payload);
-    return;
-  }
-
-  // Fallback: send to any socket whose key matches ignoring the leading "U"
-  for (const [key, ws] of clients) {
-    if (ws.readyState !== WebSocket.OPEN) continue;
-    if (key.replace(/^U/, "") === want.replace(/^U/, "")) {
-      ws.send(payload);
-    }
+  const ws =
+    clients.get(userId) ||
+    clients.get(`U${userId}`) ||
+    clients.get(String(userId).replace(/^U/, ""));
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify({ type: "update", state: gelly }));
   }
 }
 
@@ -379,7 +169,7 @@ async function sendLeaderboard() {
     .map(g => ({
       displayName: g.displayName || g.loginName || "Unknown",
       loginName: g.loginName || "unknown",
-      score: Math.max(0, Math.round(g.careScore || 0)), // use new score
+      score: Math.max(0, Math.round(g.careScore || 0)),
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
@@ -395,6 +185,9 @@ const STREAM_ELEMENTS_API = "https://api.streamelements.com/kappa/v2/points";
 const STREAM_ELEMENTS_JWT = process.env.STREAMELEMENTS_JWT;
 const STREAM_ELEMENTS_CHANNEL_ID = process.env.STREAMELEMENTS_CHANNEL_ID;
 const ALLOW_GUEST_PURCHASES = process.env.ALLOW_GUEST_PURCHASES === "true";
+function _claims(authHeader) {
+  try { return jwt.decode((authHeader || "").split(" ")[1]) || {}; } catch { return {}; }
+}
 
 async function fetchTwitchUserData(userId) {
   try {
@@ -413,20 +206,17 @@ async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
 }
+
 // --- points cache (5s) to avoid SE thrash + rate limits
 const _pointsCache = new Map(); // key: login -> { points, ts }
 const POINTS_CACHE_MS = 5000;
-
-function _normLogin(u) {
-  return String(u || "").trim().replace(/^@/, "").toLowerCase();
-}
+const _normLogin = (u) => String(u || "").trim().replace(/^@/, "").toLowerCase();
 
 async function getUserPoints(usernameRaw) {
   try {
     const username = _normLogin(usernameRaw);
     if (!username || username === "guest" || username === "unknown") return 0;
 
-    // cache hit?
     const hit = _pointsCache.get(username);
     const now = Date.now();
     if (hit && (now - hit.ts) < POINTS_CACHE_MS) return hit.points;
@@ -444,23 +234,11 @@ async function getUserPoints(usernameRaw) {
       2500
     );
 
-    if (res.status === 404) {
-      // Normal for users who never earned points yet.
-      // Treat as 0, but cache briefly to keep UI stable.
-      _pointsCache.set(username, { points: 0, ts: now });
-      return 0;
-    }
-
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      console.warn("[SE] points HTTP", res.status, text);
-      // don't cache errors—try again on next call
-      return 0;
-    }
+    if (res.status === 404) { _pointsCache.set(username, { points: 0, ts: now }); return 0; }
+    if (!res.ok) { console.warn("[SE] points HTTP", res.status, await res.text().catch(() => "")); return 0; }
 
     const data = await res.json().catch(() => ({}));
     const pts = (typeof data?.points === "number") ? data.points : 0;
-
     _pointsCache.set(username, { points: pts, ts: now });
     return pts;
   } catch (e) {
@@ -482,12 +260,11 @@ async function deductUserPoints(username, amount) {
 }
 
 // ===== Care Score config =====
-const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 24); // faster decay to prevent runaway
+const CARE_HALF_LIFE_HOURS = Number(process.env.CARE_HALF_LIFE_HOURS || 24); // faster decay
 const CARE_WEIGHTS = (() => {
   try { return JSON.parse(process.env.CARE_WEIGHTS_JSON); }
-  catch { return { feed: 6, play: 4, clean: 3 }; }  // smaller per-action gains
+  catch { return { feed: 6, play: 4, clean: 3 }; }
 })();
-const DUEL_CARE_PCT = Number(process.env.DUEL_CARE_PCT || 0.01); // 1% default
 const MOMENTUM_CAPS = {
   egg:   Number(process.env.CAP_MOMENTUM_EGG   || 300),
   blob:  Number(process.env.CAP_MOMENTUM_BLOB  || 1000),
@@ -526,7 +303,7 @@ async function updateCareScore(gelly, eventType /* 'feed'|'play'|'clean'|null */
   return gelly.careScore;
 }
 
-// single definition
+// Inventory normalize
 function normalizeInventory(arr) {
   const seen = new Set();
   const out = [];
@@ -548,7 +325,7 @@ function normalizeInventory(arr) {
   return out;
 }
 
-// merge docs
+// Merge guest + real docs
 async function mergeUserDocs(userId) {
   const isReal = !String(userId).startsWith("U");
   if (!isReal) {
@@ -591,6 +368,7 @@ async function mergeUserDocs(userId) {
   // optional: await Gelly.deleteOne({ _id: opaque._id });
   return real;
 }
+
 // ===== Store =====
 const storeItems = [
   { id: "chain",        name: "Gold chain",   type: "accessory", cost: 300000, currency: "jellybeans" },
@@ -606,6 +384,8 @@ const storeItems = [
 ];
 
 // ===== API =====
+
+// always return a state (guest or real); also merges guest→real when authorized later
 app.get("/v1/state/:userId", async (req, res) => {
   try {
     const userId = canonicalUserId(req.headers.authorization, req.params.userId);
@@ -618,24 +398,77 @@ app.get("/v1/state/:userId", async (req, res) => {
       const td = await fetchTwitchUserData(userId);
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
+
     await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
     sendLeaderboard(); // ensures first-time users appear immediately
     res.json({ success: true, state: gelly });
-
   } catch (e) {
     console.error("[/v1/state] error", e);
     res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
+// points by username (lowercased)
 app.get("/v1/points/:username", async (req, res) => {
   try {
-    const u = String(req.params.username || "").toLowerCase();  // ✅ force lowercase
+    const u = String(req.params.username || "").toLowerCase();
     res.json({ success: true, points: await getUserPoints(u) });
   } catch {
     res.status(500).json({ success: false, points: 0 });
+  }
+});
+
+// points by numeric user id (read from JWT if present; falls back to path if numeric)
+app.get("/v1/points/by-user-id/:userId", async (req, res) => {
+  try {
+    // 1) resolve real numeric id if Authorization is present (linked viewer)
+    const auth = req.headers.authorization || "";
+    let realId = null;
+    try { realId = jwt.decode(auth.split(" ")[1])?.user_id || null; } catch {}
+
+    if (!realId) {
+      const candidate = String(req.params.userId || "");
+      if (/^\d+$/.test(candidate)) realId = candidate;
+    }
+    if (!realId) return res.json({ success: true, points: 0 }); // guest/unlinked → 0
+
+    // 2) find login: DB → Helix fallback
+    let login = null;
+    const doc = await Gelly.findOne({ userId: realId }).lean();
+    if (doc?.loginName) login = String(doc.loginName).toLowerCase();
+
+    if (!login) {
+      const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
+        headers: {
+          "Client-ID": process.env.TWITCH_CLIENT_ID,
+          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
+        }
+      });
+      if (uRes.ok) {
+        const j = await uRes.json().catch(() => ({}));
+        login = (j?.data?.[0]?.login || "").toLowerCase();
+      }
+    }
+
+    if (!login) return res.json({ success: true, points: 0 });
+
+    // 3) correct StreamElements URL (this is the bit that was broken)
+    const url = `https://api.streamelements.com/kappa/v2/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
+    const se = await fetch(url, {
+      headers: { "Authorization": `Bearer ${process.env.STREAMELEMENTS_JWT}`, "Accept": "application/json" }
+    });
+
+    if (se.status === 404) return res.json({ success: true, points: 0 }); // no points yet is normal
+    if (!se.ok) return res.json({ success: true, points: 0 });
+
+    const data = await se.json().catch(() => ({}));
+    const points = typeof data?.points === "number" ? data.points : 0;
+    return res.json({ success: true, points });
+  } catch (e) {
+    console.error("[/v1/points/by-user-id] error:", e);
+    return res.status(500).json({ success: false, points: 0 });
   }
 });
 
@@ -658,7 +491,7 @@ app.post("/v1/interact", async (req, res) => {
       if (td) { gelly.displayName = td.displayName; gelly.loginName = td.loginName; }
     }
 
-    // Ensure cooldown map is usable (Map if schema wasn’t set as Map)
+    // Ensure cooldown map is usable
     if (!(gelly.lastActionTimes instanceof Map)) {
       const init = gelly.lastActionTimes && typeof gelly.lastActionTimes === "object"
         ? Object.entries(gelly.lastActionTimes)
@@ -732,7 +565,6 @@ app.post("/v1/interact", async (req, res) => {
     return res.status(500).json({ success: false, message: "Server error" });
   }
 });
-
 
 // ---- Inventory (read) ----
 app.get("/v1/inventory/:userId", async (req, res) => {
@@ -837,7 +669,6 @@ app.post("/v1/inventory/equip", async (req, res) => {
       return res.json({ success: false, message: "Item not found" });
     }
 
-    // Only one equipped per type
     if (equipped) {
       gelly.inventory.forEach(i => {
         if (i.type === item.type && norm(i.itemId) !== norm(item.itemId)) i.equipped = false;
@@ -868,6 +699,160 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: "Not Found", method: req.method, path: req.originalUrl });
 });
 
+// ===== Duels (chat handlers) =====
+function clearExpiredChallenges() {
+  const now = Date.now();
+  for (const [target, c] of pendingDuels.entries()) {
+    if (now - c.createdAt > DUEL_TTL_MS) {
+      pendingDuels.delete(target);
+      activeByUser.delete(c.challengerLogin);
+      activeByUser.delete(target);
+    }
+  }
+}
+setInterval(clearExpiredChallenges, 5000);
+
+async function applyDuelCareDelta(gelly, pct /* e.g. +0.01 or -0.01 */) {
+  const decayed = decayMomentum(gelly.careMomentum || 0, gelly.careMomentumUpdatedAt, new Date()).momentum;
+  const currentScore = Math.max(0, Number(gelly.careScore) || 0);
+  const delta = Math.round(currentScore * pct);
+
+  let newMomentum = decayed + delta;
+  if (newMomentum < 0) newMomentum = 0;
+
+  gelly.careMomentum = newMomentum;
+  gelly.careMomentumUpdatedAt = new Date();
+
+  await updateCareScore(gelly, null);
+  await gelly.save();
+  return gelly.careScore;
+}
+
+if (ENABLE_DUELS) {
+  twitchClient.on("message", async (channel, tags, msg, self) => {
+    if (self) return;
+    const text = (msg || "").trim();
+    const low  = text.toLowerCase();
+    const sender = parseLogin(tags.username);
+
+    const isDuelCmd     = low.startsWith(DUEL_CMD);
+    const isAcceptCmd   = low.startsWith(DUEL_ACCEPT_CMD);
+    const isDeclineCmd  = low.startsWith(DUEL_DECLINE_CMD);
+
+    if (!isDuelCmd && !isAcceptCmd && !isDeclineCmd) return;
+
+    try {
+      // --- !gellyduel @user 12345 ---
+      if (isDuelCmd) {
+        const rest = text.slice(DUEL_CMD.length).trim();
+        const [rawTarget, betStr] = rest.split(/\s+/);
+        const target = parseLogin(rawTarget);
+        const betNum = parseInt(betStr, 10);
+        const bet = Math.max(DUEL_MIN_BET, Math.min(DUEL_MAX_BET, isFinite(betNum) ? betNum : 0));
+
+        if (!target) { twitchClient.say(channel, `@${sender} usage: ${DUEL_CMD} @username <bet>. Min ${DUEL_MIN_BET}, max ${DUEL_MAX_BET}.`); return; }
+        if (sender === target) { twitchClient.say(channel, `@${sender} you can’t duel yourself 😅`); return; }
+        if (activeByUser.has(sender) || activeByUser.has(target)) {
+          twitchClient.say(channel, `@${sender} someone is already in a duel. Try again in a moment.`);
+          return;
+        }
+        if (!bet || bet < DUEL_MIN_BET) { twitchClient.say(channel, `@${sender} minimum bet is ${DUEL_MIN_BET}.`); return; }
+
+        const p1 = await getUserPoints(sender);
+        const p2 = await getUserPoints(target);
+        if (p1 < bet) { twitchClient.say(channel, `@${sender} you don’t have enough Jellybeans for a ${bet} bet.`); return; }
+        if (p2 < bet) { twitchClient.say(channel, `@${sender} ${target} doesn’t have enough Jellybeans for ${bet}.`); return; }
+
+        activeByUser.add(sender);
+        activeByUser.add(target);
+        pendingDuels.set(target, { challengerLogin: sender, bet, createdAt: Date.now() });
+
+        twitchClient.say(
+          channel,
+          `@${target}, @${sender} has challenged you to a GELLY DUEL for ${bet} 🫘! ` +
+          `Type ${DUEL_ACCEPT_CMD} to fight (${Math.round(DUEL_TTL_MS/1000)}s).`
+        );
+        return;
+      }
+
+      // --- !gellyaccept [@challenger] ---
+      if (isAcceptCmd) {
+        const rest = text.slice(DUEL_ACCEPT_CMD.length).trim();
+        const maybeChallenger = parseLogin(rest.split(/\s+/)[0] || "");
+        const challenge = pendingDuels.get(sender);
+
+        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
+        if (maybeChallenger && maybeChallenger !== challenge.challengerLogin) {
+          twitchClient.say(channel, `@${sender} your pending challenger is @${challenge.challengerLogin}, not @${maybeChallenger}.`);
+          return;
+        }
+
+        pendingDuels.delete(sender);
+
+        const challenger = challenge.challengerLogin;
+        const target = sender;
+        const bet = challenge.bet;
+
+        const g1 = await getGellyByLogin(challenger);
+        const g2 = await getGellyByLogin(target);
+        await updateCareScore(g1, null); await g1.save();
+        await updateCareScore(g2, null); await g2.save();
+
+        const p1 = await getUserPoints(challenger);
+        const p2 = await getUserPoints(target);
+        if (p1 < bet || p2 < bet) {
+          twitchClient.say(channel, `Duel canceled: one of you no longer has ${bet} Jellybeans.`);
+          activeByUser.delete(challenger); activeByUser.delete(target);
+          return;
+        }
+
+        const cs1 = Number(g1.careScore || 0);
+        const cs2 = Number(g2.careScore || 0);
+        const probChallenger = weightedWinProb(cs1, cs2);
+        const roll = Math.random();
+        const winner = roll < probChallenger ? challenger : target;
+        const loser  = winner === challenger ? target : challenger;
+
+        await adjustUserPoints(winner, +bet);
+        await adjustUserPoints(loser,  -bet);
+
+        const gW = winner === challenger ? g1 : g2;
+        const gL = winner === challenger ? g2 : g1;
+        await applyDuelCareDelta(gW, +DUEL_CARE_PCT);
+        await applyDuelCareDelta(gL, -DUEL_CARE_PCT);
+
+        if (g1.userId) broadcastState(g1.userId, g1);
+        if (g2.userId) broadcastState(g2.userId, g2);
+        sendLeaderboard();
+
+        const pretty = (n) => Math.round(n).toLocaleString();
+        twitchClient.say(
+          channel,
+          `⚔️ Gelly Duel: @${challenger} (care ${pretty(cs1)}) vs @${target} (care ${pretty(cs2)}). ` +
+          `Winner: @${winner}! +${bet}🫘 & +${Math.round(DUEL_CARE_PCT*100)}% care. @${loser} loses ${bet}🫘 & ${Math.round(DUEL_CARE_PCT*100)}% care.`
+        );
+
+        activeByUser.delete(challenger); activeByUser.delete(target);
+        return;
+      }
+
+      // --- !gellydecline (optional) ---
+      if (isDeclineCmd) {
+        const challenge = pendingDuels.get(sender);
+        if (!challenge) { twitchClient.say(channel, `@${sender} you don’t have a pending duel.`); return; }
+        pendingDuels.delete(sender);
+        activeByUser.delete(sender);
+        activeByUser.delete(challenge.challengerLogin);
+        twitchClient.say(channel, `@${sender} declined the duel. All good!`);
+        return;
+      }
+    } catch (e) {
+      console.error("[DUEL] error:", e);
+      twitchClient.say(channel, `Something broke while processing the duel command. Sorry!`);
+      activeByUser.delete(sender);
+    }
+  });
+}
 
 // Bits verification (Helix: Get Extension Transactions)
 async function verifyBitsTransaction(transactionId, userId) {
@@ -878,8 +863,8 @@ async function verifyBitsTransaction(transactionId, userId) {
     }
 
     const params = new URLSearchParams({
-      extension_id: EXT_CLIENT_ID,   // your Extension's client id
-      id: transactionId              // the id from onTransactionComplete
+      extension_id: EXT_CLIENT_ID,
+      id: transactionId
     });
 
     const res = await fetch(`https://api.twitch.tv/helix/extensions/transactions?${params.toString()}`, {
@@ -903,7 +888,6 @@ async function verifyBitsTransaction(transactionId, userId) {
       return false;
     }
 
-    // Accept either shape: tx.product.type or tx.product_type
     const productType = tx.product?.type || tx.product_type;
     const okUser = String(tx.user_id) === String(userId);
     const okType = productType === "BITS_IN_EXTENSION";
