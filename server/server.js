@@ -221,7 +221,9 @@ async function getUserPoints(usernameRaw) {
     if (hit && (now - hit.ts) < POINTS_CACHE_MS) return hit.points;
 
     const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(username)}`;
-    const res = await fetchWithTimeout(
+
+    // First attempt WITH Authorization
+    let res = await fetchWithTimeout(
       (signal) => fetch(url, {
         method: "GET",
         headers: {
@@ -233,8 +235,25 @@ async function getUserPoints(usernameRaw) {
       2500
     );
 
+    // If auth is rejected, retry WITHOUT Authorization (public GET works on many SE setups)
+    if (res.status === 401 || res.status === 403) {
+      console.warn("[SE] points auth rejected (", res.status, ") for", username, "— retrying without Authorization");
+      res = await fetchWithTimeout(
+        (signal) => fetch(url, {
+          method: "GET",
+          headers: { "Accept": "application/json" },
+          signal
+        }),
+        2500
+      );
+    }
+
     if (res.status === 404) { _pointsCache.set(username, { points: 0, ts: now }); return 0; }
-    if (!res.ok) { console.warn("[SE] points HTTP", res.status, await res.text().catch(() => "")); return 0; }
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      console.warn("[SE] points HTTP", res.status, body.slice(0, 200));
+      return 0;
+    }
 
     const data = await res.json().catch(() => ({}));
     const pts = (typeof data?.points === "number") ? data.points : 0;
@@ -245,6 +264,7 @@ async function getUserPoints(usernameRaw) {
     return 0;
   }
 }
+
 
 async function deductUserPoints(username, amount) {
   try {
@@ -468,7 +488,7 @@ app.get("/v1/points/:username", async (req, res) => {
 // points by numeric user id (read from JWT if present; falls back to path if numeric)
 app.get("/v1/points/by-user-id/:userId", async (req, res) => {
   try {
-    // 1) resolve real numeric id if Authorization is present (linked viewer)
+    // Resolve real numeric id from JWT first, then fallback to :userId if numeric
     const auth = req.headers.authorization || "";
     let realId = null;
     try { realId = jwt.decode(auth.split(" ")[1])?.user_id || null; } catch {}
@@ -478,7 +498,7 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     }
     if (!realId) return res.json({ success: true, points: 0 }); // guest/unlinked → 0
 
-    // 2) find login: DB → Helix fallback (with auto-refreshing token)
+    // Find login → DB, else Helix (with auto-refreshing token)
     let login = null;
     const doc = await Gelly.findOne({ userId: realId }).lean();
     if (doc?.loginName) login = String(doc.loginName).toLowerCase();
@@ -488,25 +508,15 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
       if (uRes.ok) {
         const j = await uRes.json().catch(() => ({}));
         login = (j?.data?.[0]?.login || "").toLowerCase();
+      } else {
+        console.warn("[/v1/points/by-user-id] Helix lookup failed:", uRes.status);
       }
     }
 
     if (!login) return res.json({ success: true, points: 0 });
 
-    // 3) StreamElements points lookup
-    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
-    const se = await fetch(url, {
-      headers: { "Authorization": `Bearer ${STREAM_ELEMENTS_JWT}`, "Accept": "application/json" }
-    });
-
-    if (se.status === 404) return res.json({ success: true, points: 0 }); // no points yet is normal
-    if (!se.ok) {
-      console.warn("[SE] points HTTP", se.status, await se.text().catch(() => ""));
-      return res.json({ success: true, points: 0 });
-    }
-
-    const data = await se.json().catch(() => ({}));
-    const points = typeof data?.points === "number" ? data.points : 0;
+    // Delegate to the centralized SE fetcher (handles cache + retries)
+    const points = await getUserPoints(login);
     return res.json({ success: true, points });
   } catch (e) {
     console.error("[/v1/points/by-user-id] error:", e);
