@@ -472,26 +472,19 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     const auth = req.headers.authorization || "";
     let realId = null;
     try { realId = jwt.decode(auth.split(" ")[1])?.user_id || null; } catch {}
-
     if (!realId) {
       const candidate = String(req.params.userId || "");
       if (/^\d+$/.test(candidate)) realId = candidate;
     }
     if (!realId) return res.json({ success: true, points: 0 }); // guest/unlinked → 0
 
-    // 2) find login: DB → Helix fallback
+    // 2) find login: DB → Helix fallback (with auto-refreshing token)
     let login = null;
     const doc = await Gelly.findOne({ userId: realId }).lean();
     if (doc?.loginName) login = String(doc.loginName).toLowerCase();
 
     if (!login) {
-  const uRes = await helixGet(`/users?id=${realId}`);
-  if (uRes.ok) {
-    const j = await uRes.json().catch(() => ({}));
-    login = (j?.data?.[0]?.login || "").toLowerCase();
-  }
-}
-
+      const uRes = await helixGet(`/users?id=${realId}`);
       if (uRes.ok) {
         const j = await uRes.json().catch(() => ({}));
         login = (j?.data?.[0]?.login || "").toLowerCase();
@@ -500,14 +493,17 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
 
     if (!login) return res.json({ success: true, points: 0 });
 
-    // 3) correct StreamElements URL (this is the bit that was broken)
-    const url = `https://api.streamelements.com/kappa/v2/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
+    // 3) StreamElements points lookup
+    const url = `${STREAM_ELEMENTS_API}/${STREAM_ELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
     const se = await fetch(url, {
-      headers: { "Authorization": `Bearer ${process.env.STREAMELEMENTS_JWT}`, "Accept": "application/json" }
+      headers: { "Authorization": `Bearer ${STREAM_ELEMENTS_JWT}`, "Accept": "application/json" }
     });
 
     if (se.status === 404) return res.json({ success: true, points: 0 }); // no points yet is normal
-    if (!se.ok) return res.json({ success: true, points: 0 });
+    if (!se.ok) {
+      console.warn("[SE] points HTTP", se.status, await se.text().catch(() => ""));
+      return res.json({ success: true, points: 0 });
+    }
 
     const data = await se.json().catch(() => ({}));
     const points = typeof data?.points === "number" ? data.points : 0;
@@ -517,6 +513,7 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     return res.status(500).json({ success: false, points: 0 });
   }
 });
+
 
 
 // ---- Interact ----
