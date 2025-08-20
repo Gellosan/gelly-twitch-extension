@@ -192,15 +192,14 @@ function _claims(authHeader) {
 async function fetchTwitchUserData(userId) {
   try {
     const cleanId = String(userId || "").startsWith("U") ? String(userId).substring(1) : String(userId);
-    const res = await fetch(`https://api.twitch.tv/helix/users?id=${cleanId}`, {
-      headers: { "Client-ID": TWITCH_CLIENT_ID, "Authorization": `Bearer ${TWITCH_APP_ACCESS_TOKEN}` },
-    });
+    const res = await helixGet(`/users?id=${cleanId}`);
     if (!res.ok) return null;
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     const u = data?.data?.[0];
     return u ? { displayName: u.display_name, loginName: u.login } : null;
   } catch { return null; }
 }
+
 
 async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
@@ -257,6 +256,52 @@ async function deductUserPoints(username, amount) {
     await new Promise(r => setTimeout(r, 1500));
     return newTotal;
   } catch { return null; }
+}
+// ---- Twitch App Token Manager ----
+let _appToken = process.env.TWITCH_APP_ACCESS_TOKEN || "";
+let _appTokenExp = 0; // epoch ms
+
+async function refreshAppToken() {
+  const params = new URLSearchParams({
+    client_id: process.env.TWITCH_CLIENT_ID,
+    client_secret: process.env.TWITCH_CLIENT_SECRET,
+    grant_type: "client_credentials",
+  });
+  const res = await fetch("https://id.twitch.tv/oauth2/token", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: params.toString(),
+  });
+  if (!res.ok) {
+    console.error("[TWITCH] app token refresh failed:", res.status, await res.text().catch(() => ""));
+    return _appToken; // best effort
+  }
+  const j = await res.json();
+  _appToken = j.access_token || "";
+  _appTokenExp = Date.now() + Math.max(30, j.expires_in || 3600) * 1000;
+  console.log("[TWITCH] refreshed app token; expires_in(s) =", j.expires_in);
+  return _appToken;
+}
+
+async function getAppToken(force = false) {
+  if (!force && _appToken && Date.now() < (_appTokenExp - 60_000)) return _appToken;
+  return refreshAppToken();
+}
+
+async function helixGet(path) {
+  // First try with current/seed token
+  let token = await getAppToken(false);
+  let res = await fetch(`https://api.twitch.tv/helix${path}`, {
+    headers: { "Client-ID": process.env.TWITCH_CLIENT_ID, "Authorization": `Bearer ${token}` },
+  });
+  if (res.status === 401 || res.status === 403) {
+    // Refresh and retry once
+    token = await getAppToken(true);
+    res = await fetch(`https://api.twitch.tv/helix${path}`, {
+      headers: { "Client-ID": process.env.TWITCH_CLIENT_ID, "Authorization": `Bearer ${token}` },
+    });
+  }
+  return res;
 }
 
 // ===== Care Score config =====
@@ -440,12 +485,13 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     if (doc?.loginName) login = String(doc.loginName).toLowerCase();
 
     if (!login) {
-      const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
-        headers: {
-          "Client-ID": process.env.TWITCH_CLIENT_ID,
-          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
-        }
-      });
+  const uRes = await helixGet(`/users?id=${realId}`);
+  if (uRes.ok) {
+    const j = await uRes.json().catch(() => ({}));
+    login = (j?.data?.[0]?.login || "").toLowerCase();
+  }
+}
+
       if (uRes.ok) {
         const j = await uRes.json().catch(() => ({}));
         login = (j?.data?.[0]?.login || "").toLowerCase();
