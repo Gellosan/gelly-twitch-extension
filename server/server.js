@@ -423,63 +423,45 @@ app.get("/v1/points/:username", async (req, res) => {
 // points by numeric user id (read from JWT if present; falls back to path if numeric)
 app.get("/v1/points/by-user-id/:userId", async (req, res) => {
   try {
-    // 1) Prefer the real numeric Twitch ID from the extension JWT (present if viewer shared identity)
-    const claims = _claims(req.headers.authorization);
-    let realId = claims.user_id || null;
+    // 1) resolve real numeric id if Authorization is present (linked viewer)
+    const auth = req.headers.authorization || "";
+    let realId = null;
+    try { realId = jwt.decode(auth.split(" ")[1])?.user_id || null; } catch {}
 
-    // 2) Fallback: accept a numeric path param; ignore opaque "U..." ids here
     if (!realId) {
       const candidate = String(req.params.userId || "");
       if (/^\d+$/.test(candidate)) realId = candidate;
     }
+    if (!realId) return res.json({ success: true, points: 0 }); // guest/unlinked → 0
 
-    if (!realId) {
-      // No resolvable identity → the viewer hasn’t shared. Return 0, but don’t error.
-      return res.json({ success: true, points: 0, note: "no-user-id" });
-    }
-
-    // 3) Try DB first (fast, resilient if Helix hiccups)
-    let login = null, display = null;
+    // 2) find login: DB → Helix fallback
+    let login = null;
     const doc = await Gelly.findOne({ userId: realId }).lean();
-    if (doc) {
-      if (doc.loginName)   login   = String(doc.loginName).toLowerCase();
-      if (doc.displayName) display = String(doc.displayName).toLowerCase();
-    }
+    if (doc?.loginName) login = String(doc.loginName).toLowerCase();
 
-    // 4) If missing, map id → login via Helix
     if (!login) {
-      try {
-        const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
-          headers: {
-            "Client-ID": process.env.TWITCH_CLIENT_ID,
-            "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
-          }
-        });
-        if (uRes.ok) {
-          const j = await uRes.json().catch(() => ({}));
-          login = (j?.data?.[0]?.login || "").toLowerCase();
-        } else {
-          console.warn("[points/by-user-id] Helix users HTTP", uRes.status, await uRes.text().catch(() => ""));
+      const uRes = await fetch(`https://api.twitch.tv/helix/users?id=${realId}`, {
+        headers: {
+          "Client-ID": process.env.TWITCH_CLIENT_ID,
+          "Authorization": `Bearer ${process.env.TWITCH_APP_ACCESS_TOKEN}`
         }
-      } catch (e) {
-        console.warn("[points/by-user-id] Helix users error", e?.message || e);
+      });
+      if (uRes.ok) {
+        const j = await uRes.json().catch(() => ({}));
+        login = (j?.data?.[0]?.login || "").toLowerCase();
       }
     }
 
-    // 5) If still nothing, try displayName (rare; sometimes matches SE username)
-    const loginCandidate = login || display;
-    if (!loginCandidate) return res.json({ success: true, points: 0, note: "no-login" });
+    if (!login) return res.json({ success: true, points: 0 });
 
-    // 6) StreamElements lookup
-    const url = `https://api.streamelements.com/kappa/v2/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(loginCandidate)}`;
+    // 3) correct StreamElements URL (this is the bit that was broken)
+    const url = `https://api.streamelements.com/kappa/v2/points/${process.env.STREAMELEMENTS_CHANNEL_ID}/${encodeURIComponent(login)}`;
     const se = await fetch(url, {
       headers: { "Authorization": `Bearer ${process.env.STREAMELEMENTS_JWT}`, "Accept": "application/json" }
     });
-    if (se.status === 404) return res.json({ success: true, points: 0 }); // user just has no beans yet
-    if (!se.ok) {
-      console.warn("[points/by-user-id] SE HTTP", se.status, await se.text().catch(() => ""));
-      return res.json({ success: true, points: 0 });
-    }
+
+    if (se.status === 404) return res.json({ success: true, points: 0 }); // no points yet is normal
+    if (!se.ok) return res.json({ success: true, points: 0 });
 
     const data = await se.json().catch(() => ({}));
     const points = typeof data?.points === "number" ? data.points : 0;
