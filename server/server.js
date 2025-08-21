@@ -286,9 +286,9 @@ async function deductUserPoints(username, amount) {
 function spriteUrlFor(g) {
   const color = (g.color || "blue").toLowerCase();   // blue|green|pink
   const stage = (g.stage || "blob").toLowerCase();   // egg|blob|gelly
-  if (stage === "egg")  return `/overlay-assets/egg.png`;
-  if (stage === "blob") return `/overlay-assets/blob-${color}.png`;
-  return `/overlay-assets/gelly-${color}.png`;
+  if (stage === "egg")  return `/assets/egg.png`;
+  if (stage === "blob") return `/assets/blob-${color}.png`;
+  return `/assets/gelly-${color}.png`;
 }
 
 // helper to choose accessory sprite URL based on item id (adds .src to each equipped item)
