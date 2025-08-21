@@ -7,14 +7,17 @@ const Gelly = require("./Gelly.js");
 const jwt = require("jsonwebtoken");
 const tmi = require("tmi.js");
 const fetch = (...args) => import("node-fetch").then(({ default: fetch }) => fetch(...args));
-
+const path = require("path");
 const EXT_CLIENT_ID = process.env.TWITCH_EXTENSION_CLIENT_ID;
 const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
 
 // ----- App -----
 const app = express();
 app.use(express.json());
-
+app.use("/overlay-assets", express.static(path.join(__dirname, "assets"), {
+  maxAge: "365d",
+  immutable: true
+}));
 // ===== CORS =====
 function isAllowedOrigin(origin) {
   if (!origin) return true;
@@ -22,12 +25,14 @@ function isAllowedOrigin(origin) {
   return (
     /\.ext-twitch\.tv$/.test(host) ||
     /\.twitch\.tv$/.test(host) ||
+    /\.streamelements\.com$/.test(host) ||     // 👈 add this
     host === "localhost" ||
     host.startsWith("localhost:") ||
     host === "127.0.0.1" ||
     host.startsWith("127.0.0.1:")
   );
 }
+
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
   if (isAllowedOrigin(origin)) {
@@ -277,6 +282,56 @@ async function deductUserPoints(username, amount) {
     return newTotal;
   } catch { return null; }
 }
+// helper to choose a body sprite URL based on stage+color
+function spriteUrlFor(g) {
+  const color = (g.color || "blue").toLowerCase();   // blue|green|pink
+  const stage = (g.stage || "blob").toLowerCase();   // egg|blob|gelly
+  if (stage === "egg")  return `/overlay-assets/egg.png`;
+  if (stage === "blob") return `/overlay-assets/blob-${color}.png`;
+  return `/overlay-assets/gelly-${color}.png`;
+}
+
+// helper to choose accessory sprite URL based on item id (adds .src to each equipped item)
+function accSpriteFor(item, g) {
+  const id = String(item.itemId || item.id || "").toLowerCase();
+  if (id === "sparkles") return `/overlay-assets/sparkles.gif`;
+  return `/overlay-assets/${encodeURIComponent(id)}.png`;
+}
+
+// GET /v1/overlay/gelly/by-login/:login
+app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
+  try {
+    const login = String(req.params.login || "").trim().toLowerCase();
+    if (!login) return res.status(400).json({ success: false, message: "missing login" });
+
+    // find or create a guest doc by login
+    let g = await Gelly.findOne({ loginName: login });
+    if (!g) g = await getGellyByLogin(login);
+
+    if (typeof g.applyDecay === "function") g.applyDecay();
+    await updateCareScore(g, null);
+    await g.save();
+
+    const equipped = (g.inventory || []).filter(i => i.equipped).map(i => ({ ...i, src: accSpriteFor(i, g) }));
+    return res.json({
+      success: true,
+      gelly: {
+        displayName: g.displayName || login,
+        loginName: login,
+        color: g.color || "blue",
+        stage: g.stage || "blob",
+        careScore: g.careScore || 0,
+        equipped,                      // [{ itemId, name, type, equipped, src }]
+        spriteUrl: spriteUrlFor(g)     // e.g. /overlay-assets/gelly-pink.png
+      }
+    });
+  } catch (e) {
+    console.error("[/v1/overlay/gelly/by-login] error:", e);
+    return res.status(500).json({ success: false });
+  }
+});
+
+
 // ---- Twitch App Token Manager ----
 let _appToken = process.env.TWITCH_APP_ACCESS_TOKEN || "";
 let _appTokenExp = 0; // epoch ms
