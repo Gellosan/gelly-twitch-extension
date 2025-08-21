@@ -18,7 +18,6 @@ app.use("/assets", express.static(path.join(__dirname, "assets"), {
   maxAge: "365d",
   immutable: true
 }));
-// ===== CORS =====
 // ===== CORS (OBS + StreamElements safe) =====
 function isAllowedOrigin(origin) {
   if (!origin) return "wildcard";            // Browser source may omit Origin → allow with "*"
@@ -224,6 +223,28 @@ const ALLOW_GUEST_PURCHASES = process.env.ALLOW_GUEST_PURCHASES === "true";
 function _claims(authHeader) {
   try { return jwt.decode((authHeader || "").split(" ")[1]) || {}; } catch { return {}; }
 }
+async function resolveLoginSlug(slug) {
+  // 1) Fast path: DB hit with lowercased slug
+  const lc = String(slug || "").trim().toLowerCase();
+  if (!lc) return null;
+
+  // If doc already exists using this login, done.
+  const doc = await Gelly.findOne({ loginName: lc }).lean();
+  if (doc) return lc;
+
+  // 2) Try Helix users?login= (covers DisplayName-with-different-casing)
+  const uRes = await helixGet(`/users?login=${encodeURIComponent(lc)}`);
+  if (uRes.ok) {
+    const j = await uRes.json().catch(() => ({}));
+    const u = j?.data?.[0];
+    if (u?.login) return String(u.login).toLowerCase();
+  }
+
+  // 3) As a last resort: treat it as a valid login (Twitch logins are lowercase, no spaces)
+  if (/^[a-z0-9_]{3,25}$/.test(lc)) return lc;
+
+  return null;
+}
 
 async function fetchTwitchUserData(userId) {
   try {
@@ -330,22 +351,35 @@ function accSpriteFor(item, g) {
 }
 
 // GET /v1/overlay/gelly/by-login/:login
+// Helpers to ensure absolute URLs in overlay responses
+function absUrlFor(req, urlLike) {
+  if (!urlLike) return "";
+  if (/^https?:\/\//i.test(urlLike)) return urlLike;
+  const base = `${req.protocol}://${req.get("host")}`.replace(/\/+$/, "");
+  const path = String(urlLike).startsWith("/") ? urlLike : `/${urlLike}`;
+  return `${base}${path}`;
+}
+
 app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
   try {
     const login = String(req.params.login || "").trim().toLowerCase();
-    if (!login) return res.status(400).json({ success: false, message: "missing login" });
+    if (!login) {
+      return res.status(400).json({ success: false, message: "missing login" });
+    }
 
-    // Find *all* docs with this loginName
+    // Find *all* docs for this login (in case an old guest doc exists)
     const candidates = await Gelly.find({ loginName: login }).lean();
 
-    // Prefer a real Twitch user (numeric userId). Otherwise take any non-guest if you have another scheme.
-    const pick = candidates.find(d => /^\d+$/.test(String(d.userId || "")))
-             || candidates.find(d => !String(d.userId || "").startsWith("guest-"))
-             || candidates[0]
-             || null;
+    // Prefer a real Twitch user (numeric userId). Otherwise prefer any non-guest over guest-*.
+    const pick =
+      candidates.find(d => /^\d+$/.test(String(d.userId || ""))) ||
+      candidates.find(d => !String(d.userId || "").startsWith("guest-")) ||
+      candidates[0] ||
+      null;
 
+    // If no doc exists yet, return a transient default (do NOT create a DB doc here)
     if (!pick) {
-      // No doc yet → return a transient default (do NOT create a DB doc here)
+      const sprite = absUrlFor(req, spriteUrlFor({ stage: "blob", color: "blue" }));
       return res.json({
         success: true,
         gelly: {
@@ -355,19 +389,26 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
           stage: "blob",
           careScore: 0,
           equipped: [],
-          spriteUrl: `/assets/blob-blue.png`, // or spriteUrlFor({stage:'blob', color:'blue'})
+          spriteUrl: sprite
         }
       });
     }
 
-    // Load the chosen doc fully (not lean), apply decay, compute care, and return equipped items
+    // Load the chosen doc fully (not lean), apply decay and care score refresh
     const g = await Gelly.findById(pick._id);
     if (typeof g.applyDecay === "function") g.applyDecay();
     await updateCareScore(g, null);
     await g.save();
 
-    // only equipped items
-    const equipped = (g.inventory || []).filter(i => i.equipped);
+    // Only equipped items, and add absolute src for each (using your accSpriteFor helper)
+    const equipped = (g.inventory || [])
+      .filter(i => i.equipped)
+      .map(i => ({
+        ...i,
+        src: absUrlFor(req, accSpriteFor(i, g))
+      }));
+
+    const spriteUrl = absUrlFor(req, spriteUrlFor(g));
 
     return res.json({
       success: true,
@@ -378,7 +419,7 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
         stage: g.stage || "blob",
         careScore: g.careScore || 0,
         equipped,
-        spriteUrl: spriteUrlFor(g)
+        spriteUrl
       }
     });
   } catch (e) {
@@ -386,6 +427,7 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
     return res.status(500).json({ success: false });
   }
 });
+
 
 
 // ---- Twitch App Token Manager ----
