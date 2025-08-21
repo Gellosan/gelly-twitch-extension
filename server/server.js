@@ -352,63 +352,43 @@ function accSpriteFor(item, g) {
 
 // GET /v1/overlay/gelly/by-login/:login
 // Helpers to ensure absolute URLs in overlay responses
-function absUrlFor(req, urlLike) {
-  if (!urlLike) return "";
-  if (/^https?:\/\//i.test(urlLike)) return urlLike;
-  const base = `${req.protocol}://${req.get("host")}`.replace(/\/+$/, "");
-  const path = String(urlLike).startsWith("/") ? urlLike : `/${urlLike}`;
-  return `${base}${path}`;
+function absUrlFor(req, p) {
+  // p can be '/assets/hat.png'
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const host  = req.headers['x-forwarded-host']  || req.headers.host;
+  return /^https?:\/\//i.test(p) ? p : `${proto}://${host}${p.startsWith('/') ? '' : '/'}${p}`;
 }
 
 app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
   try {
     const login = String(req.params.login || "").trim().toLowerCase();
-    if (!login) {
-      return res.status(400).json({ success: false, message: "missing login" });
-    }
+    if (!login) return res.status(400).json({ success: false, message: "missing login" });
 
-    // Find *all* docs for this login (in case an old guest doc exists)
     const candidates = await Gelly.find({ loginName: login }).lean();
+    const pick = candidates.find(d => /^\d+$/.test(String(d.userId || "")))
+             || candidates.find(d => !String(d.userId || "").startsWith("guest-"))
+             || candidates[0] || null;
 
-    // Prefer a real Twitch user (numeric userId). Otherwise prefer any non-guest over guest-*.
-    const pick =
-      candidates.find(d => /^\d+$/.test(String(d.userId || ""))) ||
-      candidates.find(d => !String(d.userId || "").startsWith("guest-")) ||
-      candidates[0] ||
-      null;
-
-    // If no doc exists yet, return a transient default (do NOT create a DB doc here)
     if (!pick) {
-      const sprite = absUrlFor(req, spriteUrlFor({ stage: "blob", color: "blue" }));
       return res.json({
         success: true,
         gelly: {
-          displayName: login,
-          loginName: login,
-          color: "blue",
-          stage: "blob",
-          careScore: 0,
+          displayName: login, loginName: login,
+          color: "blue", stage: "blob", careScore: 0,
           equipped: [],
-          spriteUrl: sprite
+          spriteUrl: absUrlFor(req, "/assets/blob-blue.png"),
         }
       });
     }
 
-    // Load the chosen doc fully (not lean), apply decay and care score refresh
     const g = await Gelly.findById(pick._id);
     if (typeof g.applyDecay === "function") g.applyDecay();
     await updateCareScore(g, null);
     await g.save();
 
-    // Only equipped items, and add absolute src for each (using your accSpriteFor helper)
     const equipped = (g.inventory || [])
       .filter(i => i.equipped)
-      .map(i => ({
-        ...i,
-        src: absUrlFor(req, accSpriteFor(i, g))
-      }));
-
-    const spriteUrl = absUrlFor(req, spriteUrlFor(g));
+      .map(i => ({ ...i, src: absUrlFor(req, accSpriteFor(i, g)) })); // <-- ABSOLUTE
 
     return res.json({
       success: true,
@@ -419,7 +399,7 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
         stage: g.stage || "blob",
         careScore: g.careScore || 0,
         equipped,
-        spriteUrl
+        spriteUrl: absUrlFor(req, spriteUrlFor(g)), // <-- ABSOLUTE
       }
     });
   } catch (e) {
@@ -427,6 +407,7 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
     return res.status(500).json({ success: false });
   }
 });
+
 
 
 
