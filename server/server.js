@@ -19,51 +19,50 @@ app.use("/assets", express.static(path.join(__dirname, "assets"), {
   immutable: true
 }));
 // ===== CORS =====
+// ===== CORS (OBS + StreamElements safe) =====
 function isAllowedOrigin(origin) {
-  if (!origin) return true; // non-browser clients often send no Origin
-  if (origin === 'null') return true; // StreamElements editor sandbox
+  if (!origin) return "wildcard";            // Browser source may omit Origin → allow with "*"
+  if (origin === "null") return "null";      // OBS Browser Source uses literal "null" string
 
-  const host = origin.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
-
-  const isSE =
-    host === 'streamelements.com' ||
-    /(^|\.)streamelements\.com$/i.test(host); // editor + overlay subdomains
-
-  const isTwitch =
-    /(^|\.)twitch\.tv$/i.test(host) ||
-    /(^|\.)ext-twitch\.tv$/i.test(host);
-
-  const isLocal =
-    host === 'localhost' || host.startsWith('localhost:') ||
-    host === '127.0.0.1' || host.startsWith('127.0.0.1:');
-
-  return isSE || isTwitch || isLocal;
+  try {
+    const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
+    return (
+      /\.ext-twitch\.tv$/.test(host) ||
+      /\.twitch\.tv$/.test(host) ||
+      /\.streamelements\.com$/.test(host) ||
+      host === "localhost" ||
+      host.startsWith("localhost:") ||
+      host === "127.0.0.1" ||
+      host.startsWith("127.0.0.1:")
+    ) ? "exact" : false;
+  } catch { return false; }
 }
 
 app.use((req, res, next) => {
-  const origin = req.headers.origin || '';
+  const origin = req.headers.origin || "";
+  const allow = isAllowedOrigin(origin);
 
-  if (isAllowedOrigin(origin)) {
-    res.setHeader('Vary', 'Origin');
-
-    if (!origin || origin === 'null') {
-      // In sandboxed iframes Origin is "null". Use wildcard and DO NOT send credentials.
-      res.setHeader('Access-Control-Allow-Origin', '*');
+  if (allow) {
+    res.setHeader("Vary", "Origin");
+    if (allow === "wildcard") {
+      // No credentials with wildcard
+      res.setHeader("Access-Control-Allow-Origin", "*");
+    } else if (allow === "null") {
+      // OBS Browser Source
+      res.setHeader("Access-Control-Allow-Origin", "null");
+      res.setHeader("Access-Control-Allow-Credentials", "true");
     } else {
-      res.setHeader('Access-Control-Allow-Origin', origin);
-      res.setHeader('Access-Control-Allow-Credentials', 'true');
+      // Exact allow-list origin
+      res.setHeader("Access-Control-Allow-Origin", origin);
+      res.setHeader("Access-Control-Allow-Credentials", "true");
     }
-
-    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-    res.setHeader(
-      'Access-Control-Allow-Headers',
-      'Authorization, Content-Type, X-Requested-With, Origin, Accept, Referer'
-    );
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With");
   }
-
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+
 
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
