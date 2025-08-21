@@ -294,8 +294,8 @@ function spriteUrlFor(g) {
 // helper to choose accessory sprite URL based on item id (adds .src to each equipped item)
 function accSpriteFor(item, g) {
   const id = String(item.itemId || item.id || "").toLowerCase();
-  if (id === "sparkles") return `/overlay-assets/sparkles.gif`;
-  return `/overlay-assets/${encodeURIComponent(id)}.png`;
+  if (id === "sparkles") return `/assets/sparkles.gif`;
+  return `/assets/${encodeURIComponent(id)}.png`;
 }
 
 // GET /v1/overlay/gelly/by-login/:login
