@@ -25,11 +25,9 @@ function isAllowedOrigin(origin) {
   return (
     /\.ext-twitch\.tv$/.test(host) ||
     /\.twitch\.tv$/.test(host) ||
-    /\.streamelements\.com$/.test(host) ||     // 👈 add this
-    host === "localhost" ||
-    host.startsWith("localhost:") ||
-    host === "127.0.0.1" ||
-    host.startsWith("127.0.0.1:")
+    host === "streamelements.com" || /(^|\.)streamelements\.com$/i.test(host) || // <-- allow root + subdomains
+    host === "localhost" || host.startsWith("localhost:") ||
+    host === "127.0.0.1" || host.startsWith("127.0.0.1:")
   );
 }
 
