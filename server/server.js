@@ -20,16 +20,50 @@ app.use("/assets", express.static(path.join(__dirname, "assets"), {
 }));
 // ===== CORS =====
 function isAllowedOrigin(origin) {
-  if (!origin) return true;
-  const host = origin.replace(/^https?:\/\//i, "").split("/")[0].toLowerCase();
-  return (
-    /\.ext-twitch\.tv$/.test(host) ||
-    /\.twitch\.tv$/.test(host) ||
-    host === "streamelements.com" || /(^|\.)streamelements\.com$/i.test(host) || // <-- allow root + subdomains
-    host === "localhost" || host.startsWith("localhost:") ||
-    host === "127.0.0.1" || host.startsWith("127.0.0.1:")
-  );
+  if (!origin) return true; // non-browser clients often send no Origin
+  if (origin === 'null') return true; // StreamElements editor sandbox
+
+  const host = origin.replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
+
+  const isSE =
+    host === 'streamelements.com' ||
+    /(^|\.)streamelements\.com$/i.test(host); // editor + overlay subdomains
+
+  const isTwitch =
+    /(^|\.)twitch\.tv$/i.test(host) ||
+    /(^|\.)ext-twitch\.tv$/i.test(host);
+
+  const isLocal =
+    host === 'localhost' || host.startsWith('localhost:') ||
+    host === '127.0.0.1' || host.startsWith('127.0.0.1:');
+
+  return isSE || isTwitch || isLocal;
 }
+
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+
+  if (isAllowedOrigin(origin)) {
+    res.setHeader('Vary', 'Origin');
+
+    if (!origin || origin === 'null') {
+      // In sandboxed iframes Origin is "null". Use wildcard and DO NOT send credentials.
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    } else {
+      res.setHeader('Access-Control-Allow-Origin', origin);
+      res.setHeader('Access-Control-Allow-Credentials', 'true');
+    }
+
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+    res.setHeader(
+      'Access-Control-Allow-Headers',
+      'Authorization, Content-Type, X-Requested-With, Origin, Accept, Referer'
+    );
+  }
+
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 app.use((req, res, next) => {
   const origin = req.headers.origin || "";
