@@ -14,7 +14,7 @@ const EXT_APP_TOKEN = process.env.TWITCH_EXTENSION_APP_TOKEN;
 // ----- App -----
 const app = express();
 app.use(express.json());
-app.use("/overlay-assets", express.static(path.join(__dirname, "assets"), {
+app.use("/assets", express.static(path.join(__dirname, "assets"), {
   maxAge: "365d",
   immutable: true
 }));
