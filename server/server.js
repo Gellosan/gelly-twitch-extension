@@ -586,6 +586,7 @@ const storeItems = [
   { id: "sword",        name: "Sword",        type: "weapon",    cost: 100,    currency: "bits" },
   { id: "king-crown",   name: "Royal Crown",  type: "hat",       cost: 100,    currency: "bits" },
   { id: "gun",          name: "M4",           type: "weapon",    cost: 100,    currency: "bits" },
+  { id: "katana",       name: "Katana",       type: "weapon",    cost: 100,    currency: "bits" },
 ];
 
 // ===== API =====
