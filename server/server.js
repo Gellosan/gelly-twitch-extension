@@ -336,15 +336,40 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
     const login = String(req.params.login || "").trim().toLowerCase();
     if (!login) return res.status(400).json({ success: false, message: "missing login" });
 
-    // find or create a guest doc by login
-    let g = await Gelly.findOne({ loginName: login });
-    if (!g) g = await getGellyByLogin(login);
+    // Find *all* docs with this loginName
+    const candidates = await Gelly.find({ loginName: login }).lean();
 
+    // Prefer a real Twitch user (numeric userId). Otherwise take any non-guest if you have another scheme.
+    const pick = candidates.find(d => /^\d+$/.test(String(d.userId || "")))
+             || candidates.find(d => !String(d.userId || "").startsWith("guest-"))
+             || candidates[0]
+             || null;
+
+    if (!pick) {
+      // No doc yet → return a transient default (do NOT create a DB doc here)
+      return res.json({
+        success: true,
+        gelly: {
+          displayName: login,
+          loginName: login,
+          color: "blue",
+          stage: "blob",
+          careScore: 0,
+          equipped: [],
+          spriteUrl: `/assets/blob-blue.png`, // or spriteUrlFor({stage:'blob', color:'blue'})
+        }
+      });
+    }
+
+    // Load the chosen doc fully (not lean), apply decay, compute care, and return equipped items
+    const g = await Gelly.findById(pick._id);
     if (typeof g.applyDecay === "function") g.applyDecay();
     await updateCareScore(g, null);
     await g.save();
 
-    const equipped = (g.inventory || []).filter(i => i.equipped).map(i => ({ ...i, src: accSpriteFor(i, g) }));
+    // only equipped items
+    const equipped = (g.inventory || []).filter(i => i.equipped);
+
     return res.json({
       success: true,
       gelly: {
@@ -353,8 +378,8 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
         color: g.color || "blue",
         stage: g.stage || "blob",
         careScore: g.careScore || 0,
-        equipped,                      // [{ itemId, name, type, equipped, src }]
-        spriteUrl: spriteUrlFor(g)     // e.g. /overlay-assets/gelly-pink.png
+        equipped,
+        spriteUrl: spriteUrlFor(g)
       }
     });
   } catch (e) {
