@@ -69,7 +69,7 @@ GellySchema.methods.updateStats = function (action) {
     this.mood   = clamp(this.mood + 5);
   } else if (action === "play") {
     this.mood   = clamp(this.mood + 15);
-    this.energy = clamp(this.energy - 5);
+    this.energy = clamp(this.energy - 2);
   } else if (action === "clean") {
     this.cleanliness = clamp(this.cleanliness + 20);
     this.mood        = clamp(this.mood + 3);
