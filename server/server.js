@@ -192,26 +192,75 @@ function canonicalUserId(authHeader, supplied) {
 }
 
 async function sendLeaderboard() {
-  const gellys = await Gelly.find();
-  for (const g of gellys) {
-    if (typeof g.applyDecay === "function") { g.applyDecay(); }
-    await updateCareScore(g, null); // decay-only refresh
+  // Pull lean docs for grouping
+  const all = await Gelly.find().lean();
+
+  // Group by canonical login & choose a single best doc per login
+  const unique = _dedupeByLogin(all);
+
+  // Refresh/decay only the winners we’ll actually display
+  const refreshed = [];
+  for (const raw of unique) {
+    const g = await Gelly.findById(raw._id);
+    if (!g) continue;
+
+    if (typeof g.applyDecay === "function") g.applyDecay(); // safe no-op if absent
+    await updateCareScore(g, null); // decay-only (no event add)
     await g.save();
+
+    refreshed.push(g);
   }
 
-  const leaderboard = gellys
-    .filter(g => g.loginName !== "guest" && g.loginName !== "unknown")
-    .map(g => ({
+  // Build, sort, slice
+  const leaderboard = refreshed
+    .map((g) => ({
       displayName: g.displayName || g.loginName || "Unknown",
-      loginName: g.loginName || "unknown",
-      score: Math.max(0, Math.round(g.careScore || 0)),
+      loginName:   _canonLogin(g.loginName || "unknown"),
+      score:       Math.max(0, Math.round(g.careScore || 0)),
     }))
+    .filter((e) => e.loginName && e.loginName !== "guest" && e.loginName !== "unknown")
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
 
   const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
-  for (const [, s] of clients) if (s.readyState === WebSocket.OPEN) s.send(payload);
+  for (const [, s] of clients) {
+    if (s.readyState === WebSocket.OPEN) s.send(payload);
+  }
 }
+async function flushLeaderboard(hard = false) {
+  const cursor = Gelly.find().cursor();
+
+  for (let g = await cursor.next(); g != null; g = await cursor.next()) {
+    // Reset momentum; keep base stats (energy/mood/cleanliness) intact
+    g.careMomentum = 0;
+    g.careMomentumUpdatedAt = new Date();
+
+    // Recompute careScore as base + 0 momentum
+    await updateCareScore(g, null);
+    if (hard) {
+      // Optional: also normalize transient fields; DO NOT touch inventory
+      // (You can add any additional "hard reset" semantics here if desired)
+    }
+    await g.save();
+  }
+
+  await sendLeaderboard();
+}
+app.post("/v1/leaderboard/flush", express.json(), async (req, res) => {
+  try {
+    const token = req.get("x-admin-token") || "";
+    if (ADMIN_TOKEN && token !== ADMIN_TOKEN) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+    const hard = !!(req.query.hard === "1" || req.body?.hard === true);
+    await flushLeaderboard(hard);
+    res.json({ success: true, hard });
+  } catch (e) {
+    console.error("[/v1/leaderboard/flush] error:", e);
+    res.status(500).json({ success: false });
+  }
+});
+
 
 // ===== Helpers =====
 const TWITCH_CLIENT_ID = process.env.TWITCH_CLIENT_ID;
@@ -261,6 +310,62 @@ async function fetchTwitchUserData(userId) {
 async function fetchWithTimeout(makeReq, ms = 2500) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), ms);
   try { const r = await makeReq(ctrl.signal); clearTimeout(t); return r; } finally { clearTimeout(t); }
+}
+// ==== Leaderboard helpers (DEDUP + DEBOUNCE) ====
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ""; // set a secret for flush endpoint
+
+const _canonLogin = (s) => String(s || "").trim().toLowerCase();
+
+function _isNumericUserId(uid) { return /^\d+$/.test(String(uid || "")); }
+function _isGuestUserId(uid)   { return /^guest-/.test(String(uid || "")); }
+
+function _pickBestDoc(a, b) {
+  // 1) prefer real numeric userId
+  const aNum = _isNumericUserId(a.userId);
+  const bNum = _isNumericUserId(b.userId);
+  if (aNum !== bNum) return aNum ? a : b;
+
+  // 2) prefer non-guest userId (vs guest-)
+  const aGuest = _isGuestUserId(a.userId);
+  const bGuest = _isGuestUserId(b.userId);
+  if (aGuest !== bGuest) return bGuest ? a : b;
+
+  // 3) fresher momentum timestamp
+  const aAt = new Date(a.careMomentumUpdatedAt || a.updatedAt || 0).getTime();
+  const bAt = new Date(b.careMomentumUpdatedAt || b.updatedAt || 0).getTime();
+  if (aAt !== bAt) return aAt > bAt ? a : b;
+
+  // 4) higher score as tie-breaker
+  const aScore = Number(a.careScore || 0);
+  const bScore = Number(b.careScore || 0);
+  if (aScore !== bScore) return aScore > bScore ? a : b;
+
+  // 5) last tie-break: newer createdAt or _id
+  const aCr = new Date(a.createdAt || 0).getTime();
+  const bCr = new Date(b.createdAt || 0).getTime();
+  if (aCr !== bCr) return aCr > bCr ? a : b;
+
+  return String(a._id) > String(b._id) ? a : b;
+}
+
+function _dedupeByLogin(docs) {
+  const map = new Map(); // login -> best doc
+  for (const d of docs) {
+    const login = _canonLogin(d.loginName || "");
+    if (!login || login === "guest" || login === "unknown") continue;
+    const cur = map.get(login);
+    map.set(login, cur ? _pickBestDoc(cur, d) : d);
+  }
+  return Array.from(map.values());
+}
+
+let _lbTimer = null;
+function scheduleLeaderboardBroadcast(ms = 200) {
+  if (_lbTimer) return;
+  _lbTimer = setTimeout(() => {
+    _lbTimer = null;
+    sendLeaderboard().catch(console.error);
+  }, ms);
 }
 
 // --- points cache (5s) to avoid SE thrash + rate limits
