@@ -1203,6 +1203,92 @@ async function verifyBitsTransaction(transactionId, userId) {
     return false;
   }
 }
+// ===== Loot Command (SE Loyalty points) =====
+const LOOT_COOLDOWN_MS = Number(process.env.LOOT_COOLDOWN_MS || 2 * 60 * 60 * 1000); // 2h
+// You can override via env: LOOT_TABLE_JSON='{"common":{"weight":70,"amount":10000},...}'
+const LOOT_TABLE = (() => {
+  try {
+    const j = JSON.parse(process.env.LOOT_TABLE_JSON);
+    // minimal validation
+    if (j && typeof j === "object") return j;
+  } catch {}
+  return {
+    common:    { weight: 70, amount: 10_000 },
+    uncommon:  { weight: 20, amount: 100_000 },
+    rare:      { weight:  9, amount: 500_000 },
+    legendary: { weight:  1, amount: 1_000_000 },
+  };
+})();
+
+// Pick a rarity using weighted random
+function pickLootFrom(table) {
+  const entries = Object.entries(table).filter(([_, v]) => Number(v?.weight) > 0);
+  const total = entries.reduce((s, [, v]) => s + Number(v.weight || 0), 0) || 1;
+  let r = Math.random() * total;
+  for (const [rarity, v] of entries) {
+    r -= Number(v.weight || 0);
+    if (r <= 0) {
+      return { rarity, amount: Math.max(0, Number(v.amount || 0)) };
+    }
+  }
+  const [rarity, v] = entries[0] || ["common", { amount: 0 }];
+  return { rarity, amount: Math.max(0, Number(v.amount || 0)) };
+}
+
+// Simple per-user cooldown (in-memory)
+const _lootLast = new Map(); // login -> last timestamp
+
+twitchClient.on("message", async (channel, tags, msg, self) => {
+  if (self) return;
+  const text = (msg || "").trim();
+  if (!/^!loot\b/i.test(text)) return;
+
+  try {
+    const user = parseLogin(tags.username);
+    if (!user) return;
+
+    const now = Date.now();
+    const last = _lootLast.get(user) || 0;
+    const since = now - last;
+
+    if (since < LOOT_COOLDOWN_MS) {
+      const remainingMs = LOOT_COOLDOWN_MS - since;
+      const mins = Math.ceil(remainingMs / 60000);
+      twitchClient.say(
+        channel,
+        `@${user} your loot cooldown is active — ${mins} minute${mins === 1 ? "" : "s"} remaining.`
+      );
+      return;
+    }
+
+    // Roll the loot
+    const { rarity, amount } = pickLootFrom(LOOT_TABLE);
+
+    // Award points using your existing adjustUserPoints helper
+    const newTotal = await adjustUserPoints(user, amount);
+    _lootLast.set(user, now);
+
+    const pretty = (n) => Math.round(n).toLocaleString();
+    const rarityLabel = rarity.toUpperCase();
+
+    if (newTotal != null) {
+      twitchClient.say(
+        channel,
+        `🎁 @${user} found a ${rarityLabel} chest! +${pretty(amount)} 🫘 ` +
+        `(new total: ${pretty(newTotal)}). Next loot in 2 hours.`
+      );
+    } else {
+      // In case points update failed (e.g., SE rate-limit), still message but clarify delay
+      twitchClient.say(
+        channel,
+        `🎁 @${user} found a ${rarityLabel} chest! +${pretty(amount)} 🫘. ` +
+        `Points update may be delayed. Next loot in 2 hours.`
+      );
+    }
+  } catch (e) {
+    console.error("[LOOT] error:", e);
+  }
+});
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
