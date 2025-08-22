@@ -65,7 +65,7 @@ GellySchema.methods.updateStats = function (action) {
   const clamp = (n) => Math.max(0, Math.min(100, n));
 
   if (action === "feed") {
-    this.energy = clamp(this.energy + 15);
+    this.energy = clamp(this.energy + 25);
     this.mood   = clamp(this.mood + 5);
   } else if (action === "play") {
     this.mood   = clamp(this.mood + 15);
