@@ -191,14 +191,54 @@ function canonicalUserId(authHeader, supplied) {
   return real || supplied;
 }
 
-async function sendLeaderboard() {
+/** ---------- NEW: shared leaderboard builder (used by API + broadcaster) ---------- */
+const _canonLogin = (s) => String(s || "").trim().toLowerCase();
+function _isNumericUserId(uid) { return /^\d+$/.test(String(uid || "")); }
+function _isGuestUserId(uid)   { return /^guest-/.test(String(uid || "")); }
+
+function _pickBestDoc(a, b) {
+  const aNum = _isNumericUserId(a.userId);
+  const bNum = _isNumericUserId(b.userId);
+  if (aNum !== bNum) return aNum ? a : b;
+
+  const aGuest = _isGuestUserId(a.userId);
+  const bGuest = _isGuestUserId(b.userId);
+  if (aGuest !== bGuest) return bGuest ? a : b;
+
+  const aAt = new Date(a.careMomentumUpdatedAt || a.updatedAt || 0).getTime();
+  const bAt = new Date(b.careMomentumUpdatedAt || b.updatedAt || 0).getTime();
+  if (aAt !== bAt) return aAt > bAt ? a : b;
+
+  const aScore = Number(a.careScore || 0);
+  const bScore = Number(b.careScore || 0);
+  if (aScore !== bScore) return aScore > bScore ? a : b;
+
+  const aCr = new Date(a.createdAt || 0).getTime();
+  const bCr = new Date(b.createdAt || 0).getTime();
+  if (aCr !== bCr) return aCr > bCr ? a : b;
+
+  return String(a._id) > String(b._id) ? a : b;
+}
+
+function _dedupeByLogin(docs) {
+  const map = new Map(); // login -> best doc
+  for (const d of docs) {
+    const login = _canonLogin(d.loginName || "");
+    if (!login || login === "guest" || login === "unknown") continue;
+    const cur = map.get(login);
+    map.set(login, cur ? _pickBestDoc(cur, d) : d);
+  }
+  return Array.from(map.values());
+}
+
+async function buildLeaderboard() {
   // Pull lean docs for grouping
   const all = await Gelly.find().lean();
 
   // Group by canonical login & choose a single best doc per login
   const unique = _dedupeByLogin(all);
 
-  // Refresh/decay only the winners we’ll actually display
+  // Refresh/decay only the winners we’ll actually display (and backfill names)
   const refreshed = [];
   for (const raw of unique) {
     const g = await Gelly.findById(raw._id);
@@ -206,8 +246,15 @@ async function sendLeaderboard() {
 
     if (typeof g.applyDecay === "function") g.applyDecay(); // safe no-op if absent
     await updateCareScore(g, null); // decay-only (no event add)
-    await g.save();
 
+    // Backfill login/display names if missing and we have a real numeric Twitch userId
+    if ((!g.loginName || g.loginName === "unknown" || g.loginName === "guest") && _isNumericUserId(g.userId)) {
+      const u = await fetchTwitchUserData(g.userId);
+      if (u?.loginName) g.loginName = String(u.loginName).toLowerCase();
+      if (u?.displayName) g.displayName = u.displayName;
+    }
+
+    await g.save();
     refreshed.push(g);
   }
 
@@ -222,11 +269,19 @@ async function sendLeaderboard() {
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
 
+  return leaderboard;
+}
+
+/** ---------- existing broadcaster now uses builder (and returns entries) ---------- */
+async function sendLeaderboard() {
+  const leaderboard = await buildLeaderboard();
   const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, s] of clients) {
     if (s.readyState === WebSocket.OPEN) s.send(payload);
   }
+  return leaderboard;
 }
+
 async function flushLeaderboard(hard = false) {
   const cursor = Gelly.find().cursor();
 
@@ -313,60 +368,6 @@ async function fetchWithTimeout(makeReq, ms = 2500) {
 }
 // ==== Leaderboard helpers (DEDUP + DEBOUNCE) ====
 const ADMIN_TOKEN = process.env.ADMIN_TOKEN || ""; // set a secret for flush endpoint
-
-const _canonLogin = (s) => String(s || "").trim().toLowerCase();
-
-function _isNumericUserId(uid) { return /^\d+$/.test(String(uid || "")); }
-function _isGuestUserId(uid)   { return /^guest-/.test(String(uid || "")); }
-
-function _pickBestDoc(a, b) {
-  // 1) prefer real numeric userId
-  const aNum = _isNumericUserId(a.userId);
-  const bNum = _isNumericUserId(b.userId);
-  if (aNum !== bNum) return aNum ? a : b;
-
-  // 2) prefer non-guest userId (vs guest-)
-  const aGuest = _isGuestUserId(a.userId);
-  const bGuest = _isGuestUserId(b.userId);
-  if (aGuest !== bGuest) return bGuest ? a : b;
-
-  // 3) fresher momentum timestamp
-  const aAt = new Date(a.careMomentumUpdatedAt || a.updatedAt || 0).getTime();
-  const bAt = new Date(b.careMomentumUpdatedAt || b.updatedAt || 0).getTime();
-  if (aAt !== bAt) return aAt > bAt ? a : b;
-
-  // 4) higher score as tie-breaker
-  const aScore = Number(a.careScore || 0);
-  const bScore = Number(b.careScore || 0);
-  if (aScore !== bScore) return aScore > bScore ? a : b;
-
-  // 5) last tie-break: newer createdAt or _id
-  const aCr = new Date(a.createdAt || 0).getTime();
-  const bCr = new Date(b.createdAt || 0).getTime();
-  if (aCr !== bCr) return aCr > bCr ? a : b;
-
-  return String(a._id) > String(b._id) ? a : b;
-}
-
-function _dedupeByLogin(docs) {
-  const map = new Map(); // login -> best doc
-  for (const d of docs) {
-    const login = _canonLogin(d.loginName || "");
-    if (!login || login === "guest" || login === "unknown") continue;
-    const cur = map.get(login);
-    map.set(login, cur ? _pickBestDoc(cur, d) : d);
-  }
-  return Array.from(map.values());
-}
-
-let _lbTimer = null;
-function scheduleLeaderboardBroadcast(ms = 200) {
-  if (_lbTimer) return;
-  _lbTimer = setTimeout(() => {
-    _lbTimer = null;
-    sendLeaderboard().catch(console.error);
-  }, ms);
-}
 
 // --- points cache (5s) to avoid SE thrash + rate limits
 const _pointsCache = new Map(); // key: login -> { points, ts }
@@ -713,7 +714,9 @@ app.get("/v1/state/:userId", async (req, res) => {
     await updateCareScore(gelly, null);
     await gelly.save();
     broadcastState(userId, gelly);
-    sendLeaderboard(); // ensures first-time users appear immediately
+
+    // Build entries for API response (and also broadcast for other clients)
+    const entries = await sendLeaderboard();
     
     res.json({ success: true, state: gelly, leaderboard: entries });
   } catch (e) {
