@@ -773,6 +773,24 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
     return res.status(500).json({ success: false, points: 0 });
   }
 });
+// GET /v1/leaderboard  → { success, entries: [{displayName, loginName, score}, ...] }
+app.get("/v1/leaderboard", async (req, res) => {
+  try {
+    // Optional ?limit=#
+    const n = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
+
+    // Build without broadcasting; slice here to honor ?limit
+    const entriesAll = await buildLeaderboard();
+    const entries = entriesAll.slice(0, n);
+
+    // No caching; this changes frequently
+    res.setHeader("Cache-Control", "no-store");
+    return res.json({ success: true, entries });
+  } catch (e) {
+    console.error("[/v1/leaderboard] error:", e);
+    return res.status(500).json({ success: false });
+  }
+});
 
 
 
