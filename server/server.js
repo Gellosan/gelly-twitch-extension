@@ -1311,6 +1311,36 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
     console.error("[LOOT] error:", e);
   }
 });
+// GET leaderboard (for panel to fetch on load)
+app.get("/v1/leaderboard", async (_req, res) => {
+  try {
+    const all = await Gelly.find().lean();
+    const unique = _dedupeByLogin(all);
+    const refreshed = [];
+    for (const raw of unique) {
+      const g = await Gelly.findById(raw._id);
+      if (!g) continue;
+      if (typeof g.applyDecay === "function") g.applyDecay();
+      await updateCareScore(g, null);
+      await g.save();
+      refreshed.push(g);
+    }
+    const leaderboard = refreshed
+      .map(g => ({
+        displayName: g.displayName || g.loginName || "Unknown",
+        loginName:   g.loginName,
+        score:       Math.max(0, Math.round(g.careScore || 0)),
+      }))
+      .filter(e => e.loginName && e.loginName !== "guest" && e.loginName !== "unknown")
+      .sort((a, b) => b.score - a.score)
+      .slice(0, 10);
+
+    res.json({ success: true, entries: leaderboard });
+  } catch (e) {
+    console.error("[/v1/leaderboard] error:", e);
+    res.status(500).json({ success: false });
+  }
+});
 
 const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
