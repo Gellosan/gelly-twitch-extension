@@ -693,6 +693,12 @@ const storeItems = [
   { id: "king-crown",   name: "Royal Crown",  type: "hat",       cost: 100,    currency: "bits" },
   { id: "gun",          name: "M4",           type: "weapon",    cost: 100,    currency: "bits" },
   { id: "katana",       name: "Katana",       type: "weapon",    cost: 100,    currency: "bits" },
+  { id: "background",  name: "Background Default",  type: "background", cost: 500000, currency: "jellybeans" },
+  { id: "background1", name: "Plains Background",   type: "background", cost: 500000, currency: "jellybeans" },
+  { id: "background2", name: "Autumn Background",   type: "background", cost: 500000, currency: "jellybeans" },
+  { id: "background3", name: "Cherry Blossoms",     type: "background", cost: 500000, currency: "jellybeans" },
+  { id: "background4", name: "Beach Background",    type: "background", cost: 500000, currency: "jellybeans" },
+  { id: "background5", name: "Mountain Background", type: "background", cost: 500000, currency: "jellybeans" },
 ];
 
 // ===== API =====
