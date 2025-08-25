@@ -492,9 +492,13 @@ app.get("/v1/overlay/gelly/by-login/:login", async (req, res) => {
     await updateCareScore(g, null);
     await g.save();
 
-    const equipped = (g.inventory || [])
-      .filter(i => i.equipped)
-      .map(i => ({ ...i, src: absUrlFor(req, accSpriteFor(i, g)) })); // <-- ABSOLUTE
+const equipped = (g.inventory || [])
+  .filter(i => i.equipped)
+  .filter(i =>
+    String(i.type || "").toLowerCase() !== "background" &&
+    !/^background(\d+)?$/i.test(String(i.itemId || i.name || ""))
+  )
+  .map(i => ({ ...i, src: absUrlFor(req, accSpriteFor(i, g)) }));
 
     return res.json({
       success: true,
