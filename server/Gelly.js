@@ -53,7 +53,7 @@ GellySchema.methods.applyDecay = function () {
   const then = this.lastUpdated ? this.lastUpdated.getTime() : now;
   const mins = Math.max(0, (now - then) / 60000);
   if (mins > 1) {
-    const decay = Math.floor(mins / 15); // every 15 min tick
+    const decay = Math.floor(mins / 60); // every 15 min tick
     this.energy      = Math.max(0, this.energy - decay);
     this.mood        = Math.max(0, this.mood - Math.floor(decay / 2));
     this.cleanliness = Math.max(0, this.cleanliness - Math.floor(decay / 3));
