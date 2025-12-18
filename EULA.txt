@@ -1,0 +1,81 @@
+Gelly Twitch Extension — End User License Agreement (EULA)
+
+Effective date: {{2025-12-18}}
+
+
+1) Overview
+
+This EULA is a legal agreement between you and twitch.tv/gellosan ("we," "us," or "our") covering your use of the Gelly Twitch extension (the "Extension"). By using or installing the Extension, you accept this EULA.
+
+If you do not agree, do not use the Extension.
+
+2) License
+
+Subject to this EULA, we grant you a limited, personal, non-exclusive, non-transferable, revocable license to access and use the Extension solely through Twitch in accordance with Twitch’s Terms of Service and policies.
+
+3) Accounts & Identity
+
+The Extension works with Twitch accounts and may use both an opaque Twitch identifier and, if you consent via Twitch’s identity sharing, your numeric Twitch ID and profile data (e.g., login name, display name). You are responsible for your Twitch account and ensuring you comply with Twitch rules.
+
+4) Virtual Items & Currency
+
+The Extension may include virtual items (e.g., Gelly accessories, backgrounds) and may support Twitch Bits or third‑party point balances (e.g., StreamElements “Jellybeans”). Virtual items:
+
+have no real-world monetary value;
+
+are licensed, not sold;
+
+may be earned, purchased, or granted; and
+
+may be modified, limited, or discontinued at any time.
+
+Bits purchases are processed by Twitch and are non-refundable except as required by law or Twitch policy. We may adjust in-game balances for fraud prevention or technical correctness.
+
+5) User Conduct
+
+You agree not to:
+
+reverse engineer, decompile, or modify the Extension except as permitted by law;
+
+bypass access controls, abuse rate limits, or exploit bugs;
+
+use the Extension to harass, threaten, or violate Twitch community guidelines;
+
+use automation/bots except where explicitly allowed by Twitch.
+
+6) Content
+
+The Extension may display usernames, display names, and game state (e.g., leaderboards, inventories). You grant us a non-exclusive, worldwide license to display such content within the Extension solely to provide the service.
+
+7) Updates & Availability
+
+We may update or discontinue the Extension, features, or content at any time. The Extension may be unavailable during outages or maintenance. Twitch or third-party services (e.g., StreamElements) may affect availability.
+
+8) Feedback
+
+If you send feedback, you grant us a perpetual, worldwide, royalty‑free license to use it for any purpose without obligation to you.
+
+9) Termination
+
+We may suspend or terminate your access if you violate this EULA, Twitch policies, or applicable laws. You may stop using the Extension at any time. Sections intended to survive termination (e.g., limitations of liability) will survive.
+
+10) Disclaimer of Warranties
+
+The Extension is provided “as is” and “as available” without warranties of any kind, express or implied, including fitness for a particular purpose, merchantability, and non‑infringement. Some jurisdictions do not allow disclaimers of implied warranties; in that case, the above may not apply to you to the extent prohibited by law.
+
+11) Limitation of Liability
+
+To the maximum extent permitted by law, we will not be liable for any indirect, incidental, special, consequential, or punitive damages, or any loss of data, use, goodwill, or other intangible losses, resulting from your use of or inability to use the Extension. Our aggregate liability will not exceed US ${{cap amount, e.g., 50}}.
+
+12) Governing Law & Dispute Resolution
+
+This EULA is governed by the laws of {{State/Country}}, without regard to conflict of law rules. {{Optional: binding arbitration / venue clause}}. You and we both submit to the exclusive jurisdiction of the courts located in {{Venue}} unless applicable law requires otherwise.
+
+13) Changes to this EULA
+
+We may update this EULA from time to time. The “Effective date” above shows the latest revision. Your continued use after changes take effect means you accept the updated terms.
+
+14) Contact
+
+Gellosan
+Email: gellobluefalcon@gmail.com
