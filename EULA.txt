@@ -1,11 +1,11 @@
 Gelly Twitch Extension — End User License Agreement (EULA)
 
-Effective date: {{2025-12-18}}
+Effective date: 2025-12-18
 
 
 1) Overview
 
-This EULA is a legal agreement between you and twitch.tv/gellosan ("we," "us," or "our") covering your use of the Gelly Twitch extension (the "Extension"). By using or installing the Extension, you accept this EULA.
+This EULA is a legal agreement between you and twitch.tv/gellosan  covering your use of the Gelly Twitch extension (the "Extension"). By using or installing the Extension, you accept this EULA.
 
 If you do not agree, do not use the Extension.
 
