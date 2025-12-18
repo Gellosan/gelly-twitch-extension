@@ -1,0 +1,120 @@
+Gelly Twitch Extension — Privacy Policy
+
+Effective date: 2025-12-18
+
+We respect your privacy. This Privacy Policy explains what we collect, how we use it, and your choices when you use the Gelly Twitch extension (the "Extension").
+
+If you do not agree, please do not use the Extension.
+
+1) Who we are
+
+Controller/Publisher: twitch.tv/gellosan
+Contact: gellobluefalcon@gmail.com
+
+2) What we collect
+
+A. Twitch identifiers & profile data
+
+Opaque ID (always available in Twitch Extensions).
+
+Numeric Twitch User ID and login/display name when you grant identity sharing.
+
+JWT claims provided by Twitch (role, channel info), verified server‑side.
+
+B. Gameplay & device events
+
+Gelly state (stage, color, stats), inventory, leaderboards.
+
+Interaction events (feed/play/clean/color), cooldowns.
+
+Bits transactions metadata as returned by Twitch verification (transaction id, product SKU).
+
+WebSocket session status and limited technical logs (timestamps, error codes).
+
+We do not collect precise location or contact lists.
+
+C. Third‑party balances
+
+StreamElements username and points for in‑extension economy ("Jellybeans"). We request point totals via StreamElements APIs or chat bot commands.
+
+D. Network data
+
+IP address and user agent may be processed transiently by our hosting/CDN for security and delivery. We do not attempt to fingerprint users.
+
+3) How we use data
+
+Provide, operate, and secure the Extension (state sync, inventory, leaderboards).
+
+Verify Bits purchases with Twitch and deliver virtual items.
+
+Retrieve/adjust loyalty point balances with StreamElements for in‑game actions.
+
+Prevent fraud, abuse, and enforce cooldowns/rate limits.
+
+Debug performance and reliability.
+
+Comply with legal obligations and Twitch policies.
+
+4) Legal bases (EEA/UK only)
+
+If you are in the EEA/UK, we process data based on:
+
+Performance of a contract (operate the Extension you request).
+
+Legitimate interests (fraud prevention, security, analytics limited to reliability).
+
+Consent (Twitch identity sharing; optional features). You can revoke identity sharing in Twitch.
+
+5) Sharing
+
+We share data only with:
+
+Twitch (including OAuth, Extensions, and Bits verification APIs).
+
+StreamElements (loyalty points).
+
+Hosting & infrastructure providers (e.g., Render/Heroku/Vercel, MongoDB Atlas, logging/metrics).
+
+Service providers under contract (only as needed to provide the Extension).
+
+Law enforcement when required by law.
+
+We do not sell your personal information.
+
+6) Retention
+
+Gameplay state & inventory: kept while your Extension usage is active and for up to {{12}} months of inactivity (for recovery), unless you request deletion.
+
+Logs: typically {{30–90}} days, unless needed to investigate abuse/security.
+
+Bits transaction ids: retained for chargeback/fraud resolution for {{12–24}} months.
+
+7) Security
+
+We use reasonable administrative, technical, and organizational measures (HTTPS/TLS, token verification, RBAC, least‑privilege). No system is 100% secure. Report issues to {{security@yourdomain}}.
+
+8) Your rights
+
+Depending on your location, you may have rights to access, correct, delete, or export your data.
+
+EEA/UK: GDPR rights; contact us to exercise.
+
+California: CCPA/CPRA rights; we do not sell/share personal info for cross‑context behavioral advertising.
+
+To exercise rights, email {{privacy@yourdomain}} from the email linked to your Twitch account (if any) or provide your Twitch User ID.
+
+9) Children
+
+The Extension is intended for users 13+ and follows Twitch’s minimum age policy. We do not knowingly collect personal data from children under 13. If you believe a child provided data, contact us to delete it.
+
+10) International transfers
+
+We may process data in countries outside your own. Where required, we use safeguards such as Standard Contractual Clauses.
+
+11) Changes
+
+We may update this Policy from time to time. Material changes will be signposted in the Extension or via the published date above.
+
+{{Company Name}}
+Email: {{privacy@yourdomain}}
+Address: {{mailing address}}
