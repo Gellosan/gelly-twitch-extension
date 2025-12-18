@@ -1235,7 +1235,7 @@ async function verifyBitsTransaction(transactionId, userId) {
   }
 }
 // ===== Loot Command (SE Loyalty points) =====
-const LOOT_COOLDOWN_MS = Number(process.env.LOOT_COOLDOWN_MS || 2 * 60 * 60 * 1000); // 2h
+const LOOT_COOLDOWN_MS = Number(process.env.LOOT_COOLDOWN_MS || 1 * 60 * 60 * 1000); // 2h
 // You can override via env: LOOT_TABLE_JSON='{"common":{"weight":70,"amount":10000},...}'
 const LOOT_TABLE = (() => {
   try {
@@ -1306,7 +1306,7 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
       twitchClient.say(
         channel,
         `🎁 @${user} found a ${rarityLabel} chest! +${pretty(amount)} 🫘 ` +
-        `(new total: ${pretty(newTotal)}). Next loot in 2 hours.`
+        `(new total: ${pretty(newTotal)}). Next loot in 1 hour.`
       );
     } else {
       // In case points update failed (e.g., SE rate-limit), still message but clarify delay
