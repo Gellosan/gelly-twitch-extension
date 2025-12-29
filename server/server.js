@@ -1313,7 +1313,7 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
       twitchClient.say(
         channel,
         `🎁 @${user} found a ${rarityLabel} chest! +${pretty(amount)} 🫘. ` +
-        `Points update may be delayed. Next loot in 2 hours.`
+        `Points update may be delayed. Next loot in 1 hour.`
       );
     }
   } catch (e) {
