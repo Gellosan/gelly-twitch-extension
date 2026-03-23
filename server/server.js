@@ -1369,7 +1369,7 @@ async function verifyBitsTransaction(transactionId, userId) {
   }
 }
 // ===== Loot Command (SE Loyalty points) =====
-const LOOT_COOLDOWN_MS = Number(process.env.LOOT_COOLDOWN_MS || 1 * 60 * 60 * 1000); // 2h
+const LOOT_COOLDOWN_MS = Number(process.env.LOOT_COOLDOWN_MS || 1 * 60 * 60 * 1000); // 1h
 // You can override via env: LOOT_TABLE_JSON='{"common":{"weight":70,"amount":10000},...}'
 const LOOT_TABLE = (() => {
   try {
@@ -1386,7 +1386,61 @@ const LOOT_TABLE = (() => {
 
   };
 })();
+// ============================================================
+// Seasonal mythic bonus cosmetic (awarded on MYTHIC loot)
+// ============================================================
+const SEASONAL_MYTHIC_BONUS = {
+  enabled: true,
+  // UTC window (change anytime)
+  start: "2026-03-01T00:00:00.000Z",
+  end:   "2026-05-01T00:00:00.000Z",
 
+  // Cosmetic item granted once per user per season (idempotent by inventory check)
+  item: { id: "rabbit-ears", name: "Rabbit Ears", type: "hat" },
+
+  // Optional: announce in chat when awarded
+  announceInChat: true,
+};
+
+function isSeasonActive(now = new Date()) {
+  if (!SEASONAL_MYTHIC_BONUS.enabled) return false;
+  const start = new Date(SEASONAL_MYTHIC_BONUS.start);
+  const end = new Date(SEASONAL_MYTHIC_BONUS.end);
+  return now >= start && now < end;
+}
+
+function hasInvItem(gelly, itemId) {
+  const key = String(itemId || "").trim().toLowerCase();
+  return (gelly.inventory || []).some(
+    (it) => String(it.itemId || "").trim().toLowerCase() === key
+  );
+}
+
+/**
+ * Award seasonal cosmetic on mythic loot.
+ * Returns { awarded:boolean, reason?:string, itemId?:string }
+ */
+async function awardSeasonalMythicCosmetic(login) {
+  if (!isSeasonActive()) return { awarded: false, reason: "season_inactive" };
+
+  const gelly = await getGellyByLogin(String(login || "").toLowerCase());
+  const { id, name, type } = SEASONAL_MYTHIC_BONUS.item;
+
+  if (!id) return { awarded: false, reason: "missing_item_id" };
+  if (hasInvItem(gelly, id)) return { awarded: false, reason: "already_awarded" };
+
+  gelly.inventory = gelly.inventory || [];
+  gelly.inventory.push({ itemId: id, name: name || id, type: type || "accessory", equipped: false });
+
+  gelly.inventory = normalizeInventory(gelly.inventory);
+  await gelly.save();
+
+  // best-effort update clients
+  if (gelly.userId) broadcastState(gelly.userId, gelly);
+  sendLeaderboard();
+
+  return { awarded: true, itemId: id };
+}
 // Pick a rarity using weighted random
 function pickLootFrom(table) {
   const entries = Object.entries(table).filter(([_, v]) => Number(v?.weight) > 0);
@@ -1430,6 +1484,13 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
 
     // Roll the loot
     const { rarity, amount } = pickLootFrom(LOOT_TABLE);
+    const isMythic = String(rarity || "").trim().toLowerCase() === "mythic";
+    if (isMythic) {
+  const bonus = await awardSeasonalMythicCosmetic(user);
+  if (bonus.awarded && SEASONAL_MYTHIC_BONUS.announceInChat) {
+    twitchClient.say(channel, `✨ Seasonal drop! @${user} also received: ${SEASONAL_MYTHIC_BONUS.item.name}`);
+  }
+}
 
     // Award points using your existing adjustUserPoints helper
     const newTotal = await adjustUserPoints(user, amount);
