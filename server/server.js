@@ -201,7 +201,7 @@ wss.on("connection", (ws, req) => {
   if (userId) {
     clients.set(userId, ws);
     console.log(`🔌 WebSocket connected for user: ${userId}`);
-    sendLeaderboard().catch(console.error);
+  scheduleLeaderboardBroadcast(250); // quick, but debounced
   }
   ws.on("close", () => {
     if (userId) { clients.delete(userId); console.log(`❌ WebSocket disconnected for user: ${userId}`); }
@@ -310,14 +310,45 @@ async function buildLeaderboard() {
 
 /** ---------- existing broadcaster now uses builder (and returns entries) ---------- */
 async function sendLeaderboard() {
-  const leaderboard = await buildLeaderboard();
+  const leaderboard = await getLeaderboardCached({ maxAgeMs: 15_000 });
   const payload = JSON.stringify({ type: "leaderboard", entries: leaderboard });
   for (const [, s] of clients) {
     if (s.readyState === WebSocket.OPEN) s.send(payload);
   }
   return leaderboard;
 }
+// ============================================================
+// Leaderboard cache + debounce (fast UI, less DB/Helix load)
+// ============================================================
+let _lbCache = { ts: 0, entries: [] };
+let _lbInFlight = null;
+let _lbTimer = null;
 
+async function getLeaderboardCached({ maxAgeMs = 15_000 } = {}) {
+  const now = Date.now();
+  if (_lbCache.entries.length && (now - _lbCache.ts) < maxAgeMs) return _lbCache.entries;
+  if (_lbInFlight) return _lbInFlight;
+
+  _lbInFlight = (async () => {
+    const entries = await buildLeaderboard(); // your existing heavy builder
+    _lbCache = { ts: Date.now(), entries };
+    _lbInFlight = null;
+    return entries;
+  })().catch((e) => {
+    _lbInFlight = null;
+    throw e;
+  });
+
+  return _lbInFlight;
+}
+
+function scheduleLeaderboardBroadcast(delayMs = 750) {
+  if (_lbTimer) return;
+  _lbTimer = setTimeout(async () => {
+    _lbTimer = null;
+    try { await sendLeaderboard(); } catch (e) { console.error("[LB] broadcast error:", e); }
+  }, delayMs);
+}
 async function flushLeaderboard(hard = false) {
   const cursor = Gelly.find().cursor();
 
@@ -768,9 +799,9 @@ app.get("/v1/state/:userId", async (req, res) => {
     broadcastState(userId, gelly);
 
     // Build entries for API response (and also broadcast for other clients)
-    const entries = await sendLeaderboard();
-    
-    res.json({ success: true, state: gelly, leaderboard: entries });
+   scheduleLeaderboardBroadcast(); // non-blocking
+const entries = await getLeaderboardCached({ maxAgeMs: 15_000 });
+res.json({ success: true, state: gelly, leaderboard: entries });
   } catch (e) {
     console.error("[/v1/state] error", e);
     res.status(500).json({ success: false, message: "Server error" });
@@ -828,16 +859,10 @@ app.get("/v1/points/by-user-id/:userId", async (req, res) => {
 // GET /v1/leaderboard  → { success, entries: [{displayName, loginName, score}, ...] }
 app.get("/v1/leaderboard", async (req, res) => {
   try {
-    // Optional ?limit=#
     const n = Math.max(1, Math.min(50, parseInt(req.query.limit, 10) || 10));
-
-    // Build without broadcasting; slice here to honor ?limit
-    const entriesAll = await buildLeaderboard();
-    const entries = entriesAll.slice(0, n);
-
-    // No caching; this changes frequently
+    const entriesAll = await getLeaderboardCached({ maxAgeMs: 15_000 });
     res.setHeader("Cache-Control", "no-store");
-    return res.json({ success: true, entries });
+    return res.json({ success: true, entries: entriesAll.slice(0, n) });
   } catch (e) {
     console.error("[/v1/leaderboard] error:", e);
     return res.status(500).json({ success: false });
@@ -1515,36 +1540,6 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
     }
   } catch (e) {
     console.error("[LOOT] error:", e);
-  }
-});
-// GET leaderboard (for panel to fetch on load)
-app.get("/v1/leaderboard", async (_req, res) => {
-  try {
-    const all = await Gelly.find().lean();
-    const unique = _dedupeByLogin(all);
-    const refreshed = [];
-    for (const raw of unique) {
-      const g = await Gelly.findById(raw._id);
-      if (!g) continue;
-      if (typeof g.applyDecay === "function") g.applyDecay();
-      await updateCareScore(g, null);
-      await g.save();
-      refreshed.push(g);
-    }
-    const leaderboard = refreshed
-      .map(g => ({
-        displayName: g.displayName || g.loginName || "Unknown",
-        loginName:   g.loginName,
-        score:       Math.max(0, Math.round(g.careScore || 0)),
-      }))
-      .filter(e => e.loginName && e.loginName !== "guest" && e.loginName !== "unknown")
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
-
-    res.json({ success: true, entries: leaderboard });
-  } catch (e) {
-    console.error("[/v1/leaderboard] error:", e);
-    res.status(500).json({ success: false });
   }
 });
 
