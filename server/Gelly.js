@@ -30,8 +30,8 @@ const GellySchema = new mongoose.Schema(
 
     color:       { type: String, default: "blue" },
     stage:       { type: String, default: "egg" }, // egg -> blob -> gelly
-// Add this field near `color:` in your schema:
-unlockedColors: { type: [String], default: () => ["blue", "green", "pink"] },
+// Base colors are always allowed; this list is mainly for panel gating + special unlocks.
+unlockedColors: { type: [String], default: () => ["blue", "green", "pink", "purple", "red"] },
     lastUpdated: { type: Date, default: Date.now },
 
     // cooldown map (must be a real Map so .set/.get work)
