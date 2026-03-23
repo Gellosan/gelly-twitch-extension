@@ -56,7 +56,8 @@ app.use((req, res, next) => {
       res.setHeader("Access-Control-Allow-Credentials", "true");
     }
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With");
+// allow x-admin-token for admin endpoints (grant/flush)
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, X-Admin-Token");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
@@ -70,11 +71,46 @@ app.use((req, res, next) => {
     if (origin) res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Access-Control-Allow-Credentials", "true");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With");
+    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Requested-With, X-Admin-Token");
   }
   if (req.method === "OPTIONS") return res.sendStatus(204);
   next();
 });
+// ===== Special / Admin-only catalogs =====
+const specialItems = [
+  // NOT sold in /v1/store; only grantable by /v1/admin/grant
+  { id: "champ-belt",  name: "Champion Belt",  type: "accessory" },
+  { id: "rabbit-Ears", name: "Rabbit Ears",      type: "hat" },
+  { id: "ban-hammer",  name: "Ban Hammer",  type: "weapon" },
+];
+
+const BASE_COLORS = ["blue", "green", "pink"];
+const SPECIAL_COLORS = ["gold", "rainbow", "shadow"];
+
+function _normStr(s) { return String(s ?? "").trim(); }
+function _normLower(s) { return _normStr(s).toLowerCase(); }
+
+function buildItemIndex(items, { includeEconomy }) {
+  const idx = new Map();
+  for (const it of Array.isArray(items) ? items : []) {
+    const id = it?.id ?? it?.itemId;
+    const key = _normLower(id);
+    if (!key) continue;
+    const meta = {
+      itemId: _normStr(id),
+      name: _normStr(it?.name) || _normStr(id),
+      type: _normStr(it?.type) || "accessory",
+    };
+    if (includeEconomy) {
+      meta.cost = Number(it?.cost ?? 0);
+      meta.currency = _normLower(it?.currency || "jellybeans");
+    }
+    idx.set(key, meta);
+  }
+  return idx;
+}
+
+
 
 // tiny req logger
 app.use((req, _res, next) => { console.log(`[REQ] ${req.method} ${req.path}`); next(); });
@@ -703,7 +739,14 @@ const storeItems = [
   { id: "background4", name: "Beach Background",    type: "background", cost: 500000, currency: "jellybeans" },
   { id: "background5", name: "Mountain Background", type: "background", cost: 500000, currency: "jellybeans" },
 ];
-
+let PUBLIC_STORE_INDEX = null;
+let GRANTABLE_INDEX = null;
+function rebuildCatalogIndexes() {
+  PUBLIC_STORE_INDEX = buildItemIndex(storeItems, { includeEconomy: true });
+  const specialIdx = buildItemIndex(specialItems, { includeEconomy: false });
+  GRANTABLE_INDEX = new Map([...PUBLIC_STORE_INDEX, ...specialIdx]);
+}
+rebuildCatalogIndexes();
 // ===== API =====
 
 // always return a state (guest or real); also merges guest→real when authorized later
@@ -861,15 +904,34 @@ app.post("/v1/interact", async (req, res) => {
     } else if (action === "clean") {
       ok = gelly.updateStats("clean").success;
       awardedEvent = "clean";
-    } else if (action?.startsWith?.("color:")) {
-      const cost = 50000;
-      if (userPoints < cost) return res.json({ success: false, message: "Not enough Jellybeans to change color." });
-      const nb = await deductUserPoints(usernameForPoints, cost);
-      if (nb === null) return res.json({ success: false, message: "Point deduction failed. Try again." });
-      userPoints = nb;
-      gelly.color = action.split(":")[1] || "blue";
-      ok = true;
-    } else if (action === "startgame") {
+    } else if (action.startsWith("color:")) {
+  const requested = _normLower(action.split(":")[1] || "blue");
+
+  const unlocked = new Set([...(gelly.unlockedColors || []).map(_normLower)]);
+  const allowed =
+    BASE_COLORS.includes(requested) ||
+    (SPECIAL_COLORS.includes(requested) && unlocked.has(requested));
+
+  if (!allowed) {
+    return res.json({ success: false, message: "That color is locked." });
+  }
+
+  const cost = 50000;
+  if (userPoints < cost) {
+    return res.json({ success: false, message: "Not enough Jellybeans to change color." });
+  }
+
+  const nb = await deductUserPoints(usernameForPoints, cost);
+  if (nb === null) {
+    return res.json({ success: false, message: "Point deduction failed. Try again." });
+  }
+
+  userPoints = nb;
+  gelly.color = requested;
+  ok = true;
+}
+     
+     else if (action === "startgame") {
       gelly.points = 0;
       gelly.energy = 100;
       gelly.mood = 100;
@@ -929,10 +991,11 @@ app.post("/v1/inventory/buy", async (req, res) => {
       await gelly.save();
     }
 
-    const storeItem = storeItems.find(s => s.id === itemId);
-    if (!storeItem) return res.json({ success: false, message: "Invalid store item" });
+       const key = _normLower(itemId);
+    const storeMeta = PUBLIC_STORE_INDEX.get(key);
+    if (!storeMeta) return res.json({ success: false, message: "Invalid store item" });
 
-    const { name, type, cost, currency } = storeItem;
+    const { itemId: canonicalItemId, name, type, cost, currency } = storeMeta;
 
     if (currency === "jellybeans") {
       const isGuest = !gelly.loginName || gelly.loginName === "guest" || gelly.loginName === "unknown";
@@ -956,7 +1019,7 @@ app.post("/v1/inventory/buy", async (req, res) => {
 
     await Gelly.updateOne(
       { userId },
-      { $addToSet: { inventory: { itemId, name, type, equipped: false } } }
+      { $addToSet: { inventory: { itemId: canonicalItemId, name, type, equipped: false } } }
     );
 
     const updated = await mergeUserDocs(userId);
@@ -970,6 +1033,78 @@ app.post("/v1/inventory/buy", async (req, res) => {
   } catch (err) {
     console.error("[ERROR] POST /v1/inventory/buy:", err);
     res.status(500).json({ success: false, message: "Server error" });
+  }
+});
+// ---- Admin: Grant items and/or unlock colors ----
+app.post("/v1/admin/grant", express.json(), async (req, res) => {
+  try {
+    const token = req.get("x-admin-token") || "";
+    if (ADMIN_TOKEN && token !== ADMIN_TOKEN) {
+      return res.status(403).json({ success: false, message: "Forbidden" });
+    }
+
+    const targetUserId = _normStr(req.body?.userId);
+    const targetLogin = _normLower(req.body?.loginName);
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const colors = Array.isArray(req.body?.colors) ? req.body.colors : [];
+
+    if (!targetUserId && !targetLogin) {
+      return res.status(400).json({ success: false, message: "Provide userId or loginName" });
+    }
+
+    let gelly = null;
+    if (targetUserId) gelly = await mergeUserDocs(targetUserId);
+    if (!gelly && targetLogin) {
+      const hit = await Gelly.findOne({ loginName: targetLogin });
+      if (hit) gelly = hit;
+    }
+    if (!gelly) return res.status(404).json({ success: false, message: "User not found" });
+
+    const toAdd = [];
+    const unknownItemIds = [];
+
+    for (const raw of items) {
+      const key = _normLower(raw);
+      if (!key) continue;
+      const meta = GRANTABLE_INDEX.get(key);
+      if (!meta) { unknownItemIds.push(String(raw)); continue; }
+      toAdd.push({ itemId: meta.itemId, name: meta.name, type: meta.type, equipped: false });
+    }
+
+    const unlock = [];
+    const badColors = [];
+    for (const c of colors) {
+      const cc = _normLower(c);
+      if (!cc) continue;
+      if (!SPECIAL_COLORS.includes(cc)) { badColors.push(String(c)); continue; }
+      unlock.push(cc);
+    }
+
+    if (toAdd.length) {
+      await Gelly.updateOne({ _id: gelly._id }, { $addToSet: { inventory: { $each: toAdd } } });
+    }
+    if (unlock.length) {
+      await Gelly.updateOne({ _id: gelly._id }, { $addToSet: { unlockedColors: { $each: unlock } } });
+    }
+
+    const updated = await Gelly.findById(gelly._id);
+    updated.inventory = normalizeInventory(updated.inventory || []);
+    await updated.save();
+
+    if (updated.userId) broadcastState(updated.userId, updated);
+    sendLeaderboard();
+
+    return res.json({
+      success: true,
+      grantedItems: toAdd.map(i => i.itemId),
+      unlockedColors: unlock,
+      unknownItemIds,
+      badColors,
+      inventoryCount: (updated.inventory || []).length,
+    });
+  } catch (e) {
+    console.error("[/v1/admin/grant] error:", e);
+    return res.status(500).json({ success: false, message: "Server error" });
   }
 });
 
