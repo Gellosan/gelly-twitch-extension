@@ -80,11 +80,11 @@ app.use((req, res, next) => {
 const specialItems = [
   // NOT sold in /v1/store; only grantable by /v1/admin/grant
   { id: "champ-belt",  name: "Champion Belt",  type: "accessory" },
-  { id: "rabbit-Ears", name: "Rabbit Ears",      type: "hat" },
+  { id: "rabbit-ears", name: "Rabbit Ears",      type: "hat" },
   { id: "ban-hammer",  name: "Ban Hammer",  type: "weapon" },
 ];
 
-const BASE_COLORS = ["blue", "green", "pink"];
+const BASE_COLORS = ["blue", "green", "pink", "purple", "red"];
 const SPECIAL_COLORS = ["gold", "rainbow", "shadow"];
 
 function _normStr(s) { return String(s ?? "").trim(); }
@@ -929,16 +929,15 @@ app.post("/v1/interact", async (req, res) => {
   userPoints = nb;
   gelly.color = requested;
   ok = true;
-}
      
-     else if (action === "startgame") {
-      gelly.points = 0;
-      gelly.energy = 100;
-      gelly.mood = 100;
-      gelly.cleanliness = 100;
-      gelly.stage = "egg";
-      gelly.lastUpdated = new Date();
-      ok = true;
+    } else if (action === "startgame") {
+  gelly.points = 0;
+  gelly.energy = 100;
+  gelly.mood = 100;
+  gelly.cleanliness = 100;
+  gelly.stage = "egg";
+  gelly.lastUpdated = new Date();
+  ok = true;
     } else {
       return res.json({ success: false, message: "Unknown action" });
     }
@@ -1379,10 +1378,12 @@ const LOOT_TABLE = (() => {
     if (j && typeof j === "object") return j;
   } catch {}
   return {
-    common:    { weight: 70, amount: 10_000 },
+    common:    { weight: 64, amount: 10_000 },
     uncommon:  { weight: 20, amount: 100_000 },
     rare:      { weight:  9, amount: 500_000 },
-    legendary: { weight:  1, amount: 1_000_000 },
+    legendary: { weight:  5, amount: 1_000_000 },
+    Mythic: { weight:  2, amount: 5_000_000 },
+
   };
 })();
 
@@ -1453,36 +1454,6 @@ twitchClient.on("message", async (channel, tags, msg, self) => {
     }
   } catch (e) {
     console.error("[LOOT] error:", e);
-  }
-});
-// GET leaderboard (for panel to fetch on load)
-app.get("/v1/leaderboard", async (_req, res) => {
-  try {
-    const all = await Gelly.find().lean();
-    const unique = _dedupeByLogin(all);
-    const refreshed = [];
-    for (const raw of unique) {
-      const g = await Gelly.findById(raw._id);
-      if (!g) continue;
-      if (typeof g.applyDecay === "function") g.applyDecay();
-      await updateCareScore(g, null);
-      await g.save();
-      refreshed.push(g);
-    }
-    const leaderboard = refreshed
-      .map(g => ({
-        displayName: g.displayName || g.loginName || "Unknown",
-        loginName:   g.loginName,
-        score:       Math.max(0, Math.round(g.careScore || 0)),
-      }))
-      .filter(e => e.loginName && e.loginName !== "guest" && e.loginName !== "unknown")
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 10);
-
-    res.json({ success: true, entries: leaderboard });
-  } catch (e) {
-    console.error("[/v1/leaderboard] error:", e);
-    res.status(500).json({ success: false });
   }
 });
 
