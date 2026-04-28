@@ -1403,11 +1403,11 @@ const LOOT_TABLE = (() => {
     if (j && typeof j === "object") return j;
   } catch {}
   return {
-    common:    { weight: 64, amount: 10_000 },
+    common:    { weight: 60, amount: 10_000 },
     uncommon:  { weight: 20, amount: 100_000 },
-    rare:      { weight:  9, amount: 500_000 },
-    legendary: { weight:  5, amount: 1_000_000 },
-    Mythic: { weight:  2, amount: 5_000_000 },
+    rare:      { weight:  10, amount: 500_000 },
+    legendary: { weight:  6, amount: 1_000_000 },
+    Mythic: { weight:  4, amount: 5_000_000 },
 
   };
 })();
@@ -1418,7 +1418,7 @@ const SEASONAL_MYTHIC_BONUS = {
   enabled: true,
   // UTC window (change anytime)
   start: "2026-03-01T00:00:00.000Z",
-  end:   "2026-05-01T00:00:00.000Z",
+  end:   "2026-05-30T00:00:00.000Z",
 
   // Cosmetic item granted once per user per season (idempotent by inventory check)
   item: { id: "rabbit-ears", name: "Rabbit Ears", type: "hat" },
