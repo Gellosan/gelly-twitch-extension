@@ -85,7 +85,7 @@ const specialItems = [
 ];
 
 const BASE_COLORS = ["blue", "green", "pink", "purple", "red"];
-const SPECIAL_COLORS = ["white"];
+const SPECIAL_COLORS = ["white", "naenae"];
 
 function _normStr(s) { return String(s ?? "").trim(); }
 function _normLower(s) { return _normStr(s).toLowerCase(); }
