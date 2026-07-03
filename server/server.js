@@ -1421,7 +1421,7 @@ const SEASONAL_MYTHIC_BONUS = {
   end:   "2026-05-30T00:00:00.000Z",
 
   // Cosmetic item granted once per user per season (idempotent by inventory check)
-  item: { id: "rabbit-ears", name: "Rabbit Ears", type: "hat" },
+  item: { id: "sailor-moon", name: "Sailor Outfit", type: "accessory" },
 
   // Optional: announce in chat when awarded
   announceInChat: true,
