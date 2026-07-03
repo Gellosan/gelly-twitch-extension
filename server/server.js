@@ -1417,8 +1417,8 @@ const LOOT_TABLE = (() => {
 const SEASONAL_MYTHIC_BONUS = {
   enabled: true,
   // UTC window (change anytime)
-  start: "2026-03-01T00:00:00.000Z",
-  end:   "2026-05-30T00:00:00.000Z",
+  start: "2026-07-01T00:00:00.000Z",
+  end:   "2026-09-30T00:00:00.000Z",
 
   // Cosmetic item granted once per user per season (idempotent by inventory check)
   item: { id: "sailor-moon", name: "Sailor Outfit", type: "accessory" },
